@@ -1613,6 +1613,22 @@ static bool _wiz_duel_alive(int m_idx, u16b tag)
     return m_idx && m_list[m_idx].r_idx && m_list[m_idx].nickname == tag;
 }
 
+/* FNV-1a over the RNG state: two builds that consume random numbers in
+ * exactly the same way end a seeded run with the same fingerprint. */
+static u32b _wiz_rng_fingerprint(void)
+{
+    u32b h = 2166136261U;
+    int  i;
+    for (i = 0; i < RAND_DEG; i++)
+    {
+        h ^= Rand_state[i];
+        h *= 16777619U;
+    }
+    h ^= Rand_place;
+    h *= 16777619U;
+    return h;
+}
+
 static void _wiz_ai_duel(void)
 {
     int     r_a, r_b, trials, i, t;
@@ -1627,6 +1643,11 @@ static void _wiz_ai_duel(void)
     int     old_invuln = p_ptr->invuln;
     int     old_chp = p_ptr->chp;
     byte    old_max_a, old_max_b;
+    u32b    seed = 0, fingerprint = 0;
+    bool    old_rand_quick = FALSE;
+    u32b    old_rand_value = 0;
+    u16b    old_rand_place = 0;
+    u32b    old_rand_state[RAND_DEG];
     doc_ptr doc;
 
     if (p_ptr->inside_arena || p_ptr->inside_battle || p_ptr->wild_mode)
@@ -1643,9 +1664,31 @@ static void _wiz_ai_duel(void)
     trials = atoi(buf);
     if (trials < 1) return;
     if (trials > 10000) trials = 10000;
+    strcpy(buf, "0");
+    if (!msg_input("Random seed (0 = don't fix)? ", buf, 12)) return;
+    seed = strtoul(buf, NULL, 10);
     if (!get_check("This deletes every monster on the level. Continue? ")) return;
+
+    if (seed)
+    {
+        /* Save the game's RNG and run the whole experiment (including the
+         * choice of fighting spots) from a fixed state */
+        old_rand_quick = Rand_quick;
+        old_rand_value = Rand_value;
+        old_rand_place = Rand_place;
+        C_COPY(old_rand_state, Rand_state, RAND_DEG, u32b);
+        Rand_quick = FALSE;
+        Rand_state_init(seed);
+    }
     if (!_wiz_duel_spots(&spot_a, &spot_b))
     {
+        if (seed)
+        {
+            Rand_quick = old_rand_quick;
+            Rand_value = old_rand_value;
+            Rand_place = old_rand_place;
+            C_COPY(Rand_state, old_rand_state, RAND_DEG, u32b);
+        }
         msg_print("Could not find room for the fight near you. Try a more open area.");
         return;
     }
@@ -1707,6 +1750,14 @@ static void _wiz_ai_duel(void)
     if (p_ptr->chp < old_chp) p_ptr->chp = old_chp;
     r_info[r_a].max_num = old_max_a;
     r_info[r_b].max_num = old_max_b;
+    if (seed)
+    {
+        fingerprint = _wiz_rng_fingerprint();
+        Rand_quick = old_rand_quick;
+        Rand_value = old_rand_value;
+        Rand_place = old_rand_place;
+        C_COPY(Rand_state, old_rand_state, RAND_DEG, u32b);
+    }
     statistics_hack = FALSE;
     p_ptr->update |= PU_MONSTERS | PU_BONUS;
     p_ptr->redraw |= PR_MAP | PR_HP;
@@ -1729,6 +1780,8 @@ static void _wiz_ai_duel(void)
         doc_printf(doc, "%-30.30s     : <color:R>%3d%%</color>\n", "Draws (time limit)", draws * 100 / i);
         doc_printf(doc, "Average length: %d game turns (limit %d)\n", turns_total / i, max_turns);
     }
+    if (seed)
+        doc_printf(doc, "Seed %lu, RNG fingerprint <color:B>%08lX</color>\n", (unsigned long)seed, (unsigned long)fingerprint);
     doc_insert(doc, "\n<color:D>Monster-vs-monster only; no regeneration during fights.</color>\n");
     doc_display(doc, "AI Duel", 0);
     doc_free(doc);
