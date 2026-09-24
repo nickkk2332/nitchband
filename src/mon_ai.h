@@ -16,6 +16,8 @@
 
 enum {
     MAI_CAST = 0,    /* try a spell; the spell AI in monspell.c chooses which */
+    MAI_STEP_AWAY,   /* frail caster backs off from the player (one step) */
+    MAI_HOLD,        /* frail caster at range keeps its distance (waits) */
     MAI_PHYSICAL,    /* everything else: move, melee, breed, pick up, ... */
     MAI_KIND_MAX
 };
@@ -40,6 +42,7 @@ typedef struct {
     int             option_ct;
     mon_ai_option_t options[MAI_MAX_OPTIONS];
     int             choice;  /* index into options; -1 until chosen */
+    int             step_dir; /* keypad direction for MAI_STEP_AWAY */
 } mon_ai_decision_t, *mon_ai_decision_ptr;
 
 /* Score this turn's options. No random numbers are used. */
@@ -54,6 +57,14 @@ extern int  mon_ai_choose(mon_ai_decision_ptr d);
 extern int  mon_ai_cast_score(mon_ptr mon);
 
 extern cptr mon_ai_kind_name(int kind);
+
+/* Effective speed this turn (as process_monsters computes it) */
+extern int  mon_ai_speed(mon_ptr mon);
+
+/* For a frail caster next to the player: the keypad direction of a free
+ * square that gets it out of melee while keeping a line of fire, or 0 if
+ * it can't (or shouldn't) step away. No random numbers are used. */
+extern int  mon_ai_step_away_dir(mon_ptr mon);
 
 /* Describe a decision (options, odds and score terms) for the inspector. */
 extern void mon_ai_doc(mon_ai_decision_ptr d, doc_ptr doc);

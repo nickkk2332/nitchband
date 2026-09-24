@@ -2291,6 +2291,7 @@ static void process_monster(int m_idx)
 
     int             mm[8] = {0};
 
+    mon_ai_decision_t decision;
     int             ai_kind = MAI_PHYSICAL;
 
     cave_type       *c_ptr;
@@ -2816,7 +2817,6 @@ static void process_monster(int m_idx)
     {
         int freq = r_ptr->spells->freq;
         bool blocked = FALSE;
-        mon_ai_decision_t decision;
 
         /* XXX Block spells occasionally if the monster just cast (EXPERIMENTAL)
          * Here, were are attempting to prevent long runs of consecutive casts for
@@ -2918,8 +2918,18 @@ static void process_monster(int m_idx)
     if (projectable(py, px, m_ptr->fy, m_ptr->fx))
         mon_lore_move(m_ptr);
 
+    /* Frail caster keeping its distance: it waits rather than closing in */
+    if (ai_kind == MAI_HOLD) return;
+
+    /* Frail caster backing out of melee (chosen in mon_ai_decide) */
+    if (ai_kind == MAI_STEP_AWAY && decision.step_dir)
+    {
+        mm[0] = decision.step_dir;
+        mm[1] = 0;
+    }
+
     /* Confused -- 100% random */
-    if (MON_CONFUSED(m_ptr) || !aware)
+    else if (MON_CONFUSED(m_ptr) || !aware)
     {
         /* Try four "random" directions */
         mm[0] = mm[1] = mm[2] = mm[3] = 5;

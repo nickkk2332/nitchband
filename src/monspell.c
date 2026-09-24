@@ -2207,7 +2207,7 @@ static void _m_tactic(void)
             if (mon_ai_stats.m_idx == _current.mon->id) mon_ai_stats.blinks++;
             if (_current.mon->id == p_ptr->riding)
                 teleport_player(10, 0);
-            else teleport_away(_current.mon->id, 10, 0);
+            else teleport_away(_current.mon->id, 10, (_current.race->flags2 & RF2_SMART) ? TELEPORT_TACTICAL : 0);
             p_ptr->update |= PU_MONSTERS;
         }
         break;
@@ -3563,10 +3563,6 @@ static bool _blink_check_p(mon_spell_ptr spell)
     }
     return _spell_is_(spell, MST_ANNOY, ANNOY_TRAPS);
 }
-static bool _blink_p(mon_spell_ptr spell)
-{
-    return spell->id.type == MST_TACTIC && spell->id.effect >= TACTIC_BLINK;
-}
 static bool _jump_p(mon_spell_ptr spell)
 {
     if (spell->id.type != MST_TACTIC) return FALSE;
@@ -3909,24 +3905,26 @@ static void _ai_direct(mon_spell_cast_ptr cast)
     if (spell && world_monster) /* prohibit if already cast */
         spell->prob = 0;
 
-    /* XXX Currently, tactical spells involve making space for spellcasting monsters. */
-    if (spells->groups[MST_TACTIC] && _distance(cast->src, cast->dest) < 4 && _find_spell(spells, _blink_check_p) && !world_monster)
-        _adjust_group(spells->groups[MST_TACTIC], NULL, 700);
+    /* Tactical spells make space for spellcasting monsters. Blinking is a
+     * random jump, so it is the fallback for a caster pressed up close that
+     * cannot simply step back (see mon_ai_step_away_dir): cornered, or the
+     * player is faster. */
+    if ( spells->groups[MST_TACTIC]
+      && _distance(cast->src, cast->dest) < 3
+      && _find_spell(spells, _blink_check_p)
+      && !world_monster
+      && !mon_ai_step_away_dir(cast->mon) )
+    {
+        _adjust_group(spells->groups[MST_TACTIC], NULL, 300);
+    }
 
     if (_distance(cast->src, cast->dest) > 5)
         _remove_group(spells->groups[MST_TACTIC], _jump_p);
 
-    /* Frail casters caught in melee would rather make space than trade
-     * spells point-blank: favor blinking away (or blinking the player away),
-     * and allow Teleport-Other even when not yet wounded. */
+    /* Frail casters caught in melee may also send the player away, even
+     * when not yet wounded. */
     if (_distance(cast->src, cast->dest) < 2 && mon_race_weak_melee(cast->race) && !world_monster)
     {
-        _adjust_group(spells->groups[MST_BREATH], NULL, 60);
-        _adjust_group(spells->groups[MST_BALL], NULL, 60);
-        _adjust_group(spells->groups[MST_BOLT], NULL, 60);
-        _adjust_group(spells->groups[MST_BEAM], NULL, 60);
-        _adjust_group(spells->groups[MST_CURSE], NULL, 60);
-        _adjust_group(spells->groups[MST_TACTIC], _blink_p, 200);
         spell = mon_spells_find(spells, _id(MST_ESCAPE, ESCAPE_TELE_OTHER));
         if (spell && !spell->prob)
         {
@@ -4585,9 +4583,9 @@ static void _ai_think_mon(mon_spell_cast_ptr cast)
     if (!(cast->flags & MSC_UNVIEW))
         _ai_wounded(cast);
 
-    /* XXX Currently, tactical spells involve making space for spellcasting monsters. */
-    if (spells->groups[MST_TACTIC] && _distance(cast->src, cast->dest) < 4 && _find_spell(spells, _blink_check_p))
-        _adjust_group(spells->groups[MST_TACTIC], NULL, 700);
+    /* Tactical spells make space for spellcasting monsters (see _ai_direct) */
+    if (spells->groups[MST_TACTIC] && _distance(cast->src, cast->dest) < 3 && _find_spell(spells, _blink_check_p))
+        _adjust_group(spells->groups[MST_TACTIC], NULL, 300);
 
     if (_distance(cast->src, cast->dest) > 5)
         _remove_group(spells->groups[MST_TACTIC], _jump_p);

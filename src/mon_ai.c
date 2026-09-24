@@ -12,6 +12,8 @@ cptr mon_ai_kind_name(int kind)
     switch (kind)
     {
     case MAI_CAST: return "Cast a spell";
+    case MAI_STEP_AWAY: return "Step away from the player";
+    case MAI_HOLD: return "Hold position at range";
     case MAI_PHYSICAL: return "Move or melee";
     }
     return "?";
@@ -83,17 +85,6 @@ static void _score_cast(mon_ptr mon, mon_ai_option_ptr opt)
     _term(opt, "Anger", freq + mon->anger);
     freq = opt->score;
 
-    /* Frail casters next to the player act through their spells (the
-     * spell AI then favors blinking away) rather than trading blows */
-    if ( mon->cdis <= 1
-      && is_hostile(mon)
-      && (r_ptr->spells->groups[MST_TACTIC] || r_ptr->spells->groups[MST_ESCAPE])
-      && mon_race_weak_melee(r_ptr) )
-    {
-        _term(opt, "Frail in melee, wants space", freq + MAX(10, freq / 2));
-        freq = opt->score;
-    }
-
     if (freq > 100) _term(opt, "Capped", 100);
     freq = opt->score;
 
@@ -111,6 +102,87 @@ static void _score_cast(mon_ptr mon, mon_ai_option_ptr opt)
     }
 }
 
+int mon_ai_speed(mon_ptr mon)
+{
+    int speed = mon->mspeed;
+    if (ironman_nightmare) speed += 5;
+    if (MON_FAST(mon)) speed += 10;
+    speed -= monster_slow(mon);
+    if (p_ptr->filibuster) speed -= SPEED_ADJ_FILIBUSTER;
+    return speed;
+}
+
+/* How many neighbouring squares the monster could move on to (so a
+ * retreating caster does not back itself into a dead end) */
+static int _open_neighbours(monster_race *r_ptr, int y, int x)
+{
+    int d, ct = 0;
+    for (d = 0; d < 8; d++)
+    {
+        int yy = y + ddy_ddd[d], xx = x + ddx_ddd[d];
+        if (!in_bounds2(yy, xx)) continue;
+        if (player_bold(yy, xx)) continue;
+        if (monster_can_enter(yy, xx, r_ptr, 0)) ct++;
+    }
+    return ct;
+}
+
+int mon_ai_step_away_dir(mon_ptr mon)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+    int           d, best_dir = 0, best_score = 0;
+
+    if (mon->cdis > 1) return 0;
+    if (!is_hostile(mon) || !is_aware(mon)) return 0;
+    if (mon->id == p_ptr->riding) return 0;
+    if (r_ptr->flags1 & RF1_NEVER_MOVE) return 0;
+    if (MON_CONFUSED(mon) || MON_MONFEAR(mon) || MON_CSLEEP(mon)) return 0;
+    if (!mon_race_weak_melee(r_ptr) || !mon_race_has_attack_spell(r_ptr)) return 0;
+
+    /* A clearly faster player just follows and gets free hits: stepping back
+     * only helps a monster that can keep up. (It may still blink.) */
+    if (mon_ai_speed(mon) + 2 < p_ptr->pspeed) return 0;
+
+    for (d = 0; d < 8; d++)
+    {
+        int y = mon->fy + ddy_ddd[d];
+        int x = mon->fx + ddx_ddd[d];
+        int score;
+
+        if (!in_bounds2(y, x)) continue;
+        if (player_bold(y, x)) continue;
+        if (cave[y][x].m_idx) continue;
+        if (!monster_can_enter(y, x, r_ptr, 0)) continue;
+        if (is_glyph_grid(&cave[y][x]) || is_mon_trap_grid(&cave[y][x])) continue;
+        if (distance(py, px, y, x) < 2) continue;         /* still in melee */
+        if (!projectable(y, x, py, px)) continue;         /* keep a line of fire */
+
+        score = 10 * distance(py, px, y, x) + _open_neighbours(r_ptr, y, x);
+        if (score > best_score)
+        {
+            best_score = score;
+            best_dir = ddd[d];
+        }
+    }
+    return best_dir;
+}
+
+/* A frail caster already at a comfortable range with a clear shot should
+ * not walk back into melee (the classic movement code runs at the player
+ * whenever it is in view). */
+static bool _hold_ok(mon_ptr mon)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+
+    if (mon->cdis < 2 || mon->cdis > 3) return FALSE;
+    if (!is_hostile(mon) || !is_aware(mon)) return FALSE;
+    if (mon->id == p_ptr->riding) return FALSE;
+    if (MON_CONFUSED(mon) || MON_MONFEAR(mon) || MON_CSLEEP(mon)) return FALSE;
+    if (!mon_race_weak_melee(r_ptr) || !mon_race_has_attack_spell(r_ptr)) return FALSE;
+    if (!projectable(mon->fy, mon->fx, py, px)) return FALSE;
+    return TRUE;
+}
+
 void mon_ai_decide(mon_ptr mon, bool cast_blocked, mon_ai_decision_ptr d)
 {
     monster_race *r_ptr = &r_info[mon->r_idx];
@@ -119,6 +191,7 @@ void mon_ai_decide(mon_ptr mon, bool cast_blocked, mon_ai_decision_ptr d)
     d->mon = mon;
     d->option_ct = 0;
     d->choice = -1;
+    d->step_dir = 0;
 
     /* The options are ordered and scored so that they add up to 100 and
      * mon_ai_choose's randint1(100) matches the classic
@@ -128,6 +201,35 @@ void mon_ai_decide(mon_ptr mon, bool cast_blocked, mon_ai_decision_ptr d)
         mon_ai_option_ptr cast = _add_option(d, MAI_CAST, "Race spell frequency", r_ptr->spells->freq);
         _score_cast(mon, cast);
         total -= cast->score;
+    }
+
+    /* A frail caster in melee range would rather back off and keep casting
+     * than trade blows. Only offered when a good square exists, so every
+     * other monster sees exactly the classic cast-or-act choice. */
+    if (total > 0)
+    {
+        int dir = mon_ai_step_away_dir(mon);
+        if (dir)
+        {
+            mon_ai_option_ptr step = _add_option(d, MAI_STEP_AWAY, "Frail in melee, square free", 60);
+            if (r_ptr->flags2 & RF2_SMART)
+                _term(step, "Smart", step->score + 15);
+            if (mon->hp < mon->maxhp / 2)
+                _term(step, "Badly hurt", step->score + 15);
+            if (step->score > total)
+                _term(step, "Capped", total);
+            total -= step->score;
+            d->step_dir = dir;
+        }
+        else if (_hold_ok(mon))
+        {
+            mon_ai_option_ptr hold = _add_option(d, MAI_HOLD, "Frail, at range with a shot", 70);
+            if (r_ptr->flags2 & RF2_SMART)
+                _term(hold, "Smart", hold->score + 15);
+            if (hold->score > total)
+                _term(hold, "Capped", total);
+            total -= hold->score;
+        }
     }
     _add_option(d, MAI_PHYSICAL, "Whenever not casting", total);
 }

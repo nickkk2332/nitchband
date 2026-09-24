@@ -1125,6 +1125,7 @@ enum {
 #define TELEPORT_LINE_OF_SIGHT 0x00000008
 #define TELEPORT_DISENGAGE     0x00000010
 #define TELEPORT_RUSH_ATTACK   0x00000020
+#define TELEPORT_TACTICAL      0x00000040  /* monster: best of 3 spots vs the player */
 
 
 /* Types of doors */
