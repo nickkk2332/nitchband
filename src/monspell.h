@@ -147,6 +147,7 @@ extern void           mon_spells_save(mon_spells_ptr spells, savefile_ptr file);
 #define MSC_DIRECT       0x0020
 #define MSC_SPLASH       0x0040
 #define MSC_UNVIEW       0x0080
+#define MSC_HEAL_ALLY    0x0100  /* HEAL_SELF redirected to cast->ally */
 typedef struct {
     mon_ptr       mon;             /* Src monster or null if MSC_SRC_PLAYER */
     char          name[MAX_NLEN];
@@ -157,6 +158,7 @@ typedef struct {
     mon_ptr       mon2;            /* Dest monster if MSC_DEST_MONSTER */
     char          name2[MAX_NLEN];
     u32b          flags;
+    mon_ptr       ally;            /* Wounded ally to heal if MSC_HEAL_ALLY */
 } mon_spell_cast_t, *mon_spell_cast_ptr;
 
 /* Allow clients to plug in a smarter/alternative AI */
@@ -167,6 +169,8 @@ extern int            mon_spell_cost(mon_spell_ptr spell, mon_race_ptr race);
 extern bool           mon_spell_cast(mon_ptr mon, mon_spell_ai ai);
 extern bool           mon_spell_cast_mon(mon_ptr mon, mon_spell_ai ai);
 extern void           mon_spell_wizard(mon_ptr mon, mon_spell_ai ai, doc_ptr doc);
+extern void           mon_ai_wizard(mon_ptr mon, doc_ptr doc);
+extern void           mon_ai_wizard_summary(doc_ptr doc);
 extern mon_spell_ptr  mon_spell_find(mon_race_ptr race, mon_spell_id_t id);
 extern bool           mon_spell_cast_possessor(mon_race_ptr race);
 
@@ -201,6 +205,8 @@ extern bool mon_race_has_dispel(mon_race_ptr race);
 extern bool mon_save_tele_to(mon_ptr mon, cptr name, bool assume_sight);
 
 extern bool hp_mon(mon_ptr mon, int amt, bool is_monspell);
+extern int  mon_race_avg_melee_dam(mon_race_ptr race);
+extern bool mon_race_weak_melee(mon_race_ptr race);
 
 /* Blue-Mage things that need local monspell.c stuff */
 extern void list_spell_info(doc_ptr doc, mon_spell_ptr spell, mon_race_ptr race);

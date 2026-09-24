@@ -1356,6 +1356,7 @@ mon_ptr mon_current(void)
 static void _spell_cast_aux(void);
 static bool _default_ai(mon_spell_cast_ptr cast);
 static bool _default_ai_mon(mon_spell_cast_ptr cast);
+static void _ai_remember(mon_spell_cast_ptr cast);
 
 static void _mon_desc(mon_ptr mon, char *buf, char color)
 {
@@ -1443,6 +1444,7 @@ bool mon_spell_cast(mon_ptr mon, mon_spell_ai ai)
             return FALSE;
         }
 
+        _ai_remember(&cast);
         _current = cast;
         _spell_cast_aux();
         memset(&_current, 0, sizeof(mon_spell_cast_t));
@@ -1468,6 +1470,7 @@ bool mon_spell_cast_mon(mon_ptr mon, mon_spell_ai ai)
     _spell_cast_init_mon(&cast, mon);
     if (ai(&cast))
     {
+        _ai_remember(&cast);
         _current = cast;
         if (_current.flags & MSC_UNVIEW)
             mon_fight = TRUE;
@@ -1509,8 +1512,6 @@ static bool _spell_fail(void)
         return _blue_mage_spell_fail();
     }
     if (_current.spell->flags & MSF_INNATE)
-        return FALSE;
-    if (_current.race->flags2 & RF2_STUPID)
         return FALSE;
     if (py_in_dungeon() && (d_info[dungeon_type].flags1 & DF1_NO_MAGIC))
         return TRUE;
@@ -2313,11 +2314,54 @@ bool hp_mon(mon_ptr mon, int amt, bool is_monspell)
     }
     return TRUE;
 }
+/* Rough average melee damage per monster turn: every blow lands, AC and
+ * saves ignored. Only meant for AI comparisons ("is this monster a brawler?"). */
+int mon_race_avg_melee_dam(mon_race_ptr race)
+{
+    int i, j, dam = 0;
+    if (race->flags1 & RF1_NEVER_BLOW) return 0;
+    for (i = 0; i < MAX_MON_BLOWS; i++)
+    {
+        mon_blow_ptr blow = &race->blows[i];
+        if (!blow->method) continue;
+        if (blow->method == RBM_EXPLODE) continue;
+        for (j = 0; j < MAX_MON_BLOW_EFFECTS; j++)
+        {
+            mon_effect_ptr effect = &blow->effects[j];
+            int            pct = effect->pct ? effect->pct : 100;
+            if (!effect->effect) continue;
+            dam += effect->dd * (effect->ds + 1) / 2 * pct / 100;
+        }
+    }
+    return dam;
+}
+
+/* A monster that would rather not be in melee: it has spells and its blows
+ * are feeble for its level. */
+bool mon_race_weak_melee(mon_race_ptr race)
+{
+    if (!race->spells) return FALSE;
+    return mon_race_avg_melee_dam(race) < race->level / 2 + 5;
+}
+
 static void _heal(void)
 {
     int amt;
     assert(_current.spell->parm.tag == MSP_DICE);
     amt = _roll(_current.spell->parm.v.dice);
+    if ((_current.flags & MSC_HEAL_ALLY) && _current.ally && _current.ally->r_idx)
+    {
+        mon_ptr ally = _current.ally;
+        if (mon_show_msg(_current.mon) || mon_show_msg(ally))
+        {
+            char ally_name[MAX_NLEN];
+            monster_desc(ally_name, ally, 0);
+            msg_format("%s tends to the wounds of %s.", _current.name, ally_name);
+        }
+        (void)hp_mon(ally, amt, FALSE);
+        if (MON_MONFEAR(ally)) set_monster_monfear(ally->id, 0);
+        return;
+    }
     if (_current.flags & MSC_SRC_PLAYER)
     {
         hp_player(amt);
@@ -3043,7 +3087,8 @@ static void _spell_cast_aux(void)
     else if (_spell_fail())
         return;
 
-    _spell_msg();
+    if (!(_current.flags & MSC_HEAL_ALLY))
+        _spell_msg();
     switch (_current.spell->id.type)
     {
     case MST_ANNOY:   _annoy();   break;
@@ -3514,6 +3559,10 @@ static bool _blink_check_p(mon_spell_ptr spell)
     }
     return _spell_is_(spell, MST_ANNOY, ANNOY_TRAPS);
 }
+static bool _blink_p(mon_spell_ptr spell)
+{
+    return spell->id.type == MST_TACTIC && spell->id.effect >= TACTIC_BLINK;
+}
 static bool _jump_p(mon_spell_ptr spell)
 {
     if (spell->id.type != MST_TACTIC) return FALSE;
@@ -3604,8 +3653,8 @@ static void _smart_tweak_res_dam(mon_spell_ptr spell, int res, u32b flags)
     pct = res_pct(res);
     if (!pct) return;
     if (pct == 100) tweak = 0;
-    else if (res_is_high(res) && res > 30) tweak = 100 - pct/2;
-    else if (res > 50) tweak = 100 - pct/3;
+    else if (res_is_high(res) && pct > 30) tweak = 100 - pct/2;
+    else if (pct > 50) tweak = 100 - pct/3;
     spell->prob = MIN(200, spell->prob*tweak/100);
 }
 static void _smart_tweak_res_sav(mon_spell_ptr spell, int res, u32b flags)
@@ -3715,9 +3764,30 @@ static void _smart_remove(mon_spell_cast_ptr cast)
     _smart_remove_escape(spells->groups[MST_ESCAPE], flags);    
 }
 
-static bool _clean_shot(point_t src, point_t dest, bool friend)
+/* Like clean_shot(), but judged from the caster's point of view: a bolt
+ * never passes through a monster that is not an enemy of the caster, nor
+ * through the player unless the caster is hostile. */
+static bool _clean_shot_mon(mon_ptr caster, point_t src, point_t dest)
 {
-    return clean_shot(src.y, src.x, dest.y, dest.x, friend);
+    int     i, grid_n;
+    u16b    grid_g[512];
+
+    grid_n = project_path(grid_g, MAX_RANGE, src.y, src.x, dest.y, dest.x, 0);
+    if (!grid_n) return FALSE;
+    if (GRID_Y(grid_g[grid_n-1]) != dest.y || GRID_X(grid_g[grid_n-1]) != dest.x) return FALSE;
+
+    for (i = 0; i < grid_n - 1; i++)
+    {
+        int y = GRID_Y(grid_g[i]);
+        int x = GRID_X(grid_g[i]);
+        int m_idx = cave[y][x].m_idx;
+
+        if (m_idx > 0 && m_idx != caster->id && !are_enemies(caster, &m_list[m_idx]))
+            return FALSE;
+        if (player_bold(y, x) && !is_hostile(caster))
+            return FALSE;
+    }
+    return TRUE;
 }
 static bool _summon_possible(point_t where)
 {
@@ -3842,6 +3912,26 @@ static void _ai_direct(mon_spell_cast_ptr cast)
     if (_distance(cast->src, cast->dest) > 5)
         _remove_group(spells->groups[MST_TACTIC], _jump_p);
 
+    /* Frail casters caught in melee would rather make space than trade
+     * spells point-blank: favor blinking away (or blinking the player away),
+     * and allow Teleport-Other even when not yet wounded. */
+    if (_distance(cast->src, cast->dest) < 2 && mon_race_weak_melee(cast->race) && !world_monster)
+    {
+        _adjust_group(spells->groups[MST_BREATH], NULL, 60);
+        _adjust_group(spells->groups[MST_BALL], NULL, 60);
+        _adjust_group(spells->groups[MST_BOLT], NULL, 60);
+        _adjust_group(spells->groups[MST_BEAM], NULL, 60);
+        _adjust_group(spells->groups[MST_CURSE], NULL, 60);
+        _adjust_group(spells->groups[MST_TACTIC], _blink_p, 200);
+        spell = mon_spells_find(spells, _id(MST_ESCAPE, ESCAPE_TELE_OTHER));
+        if (spell && !spell->prob)
+        {
+            spell->prob = 15;
+            if (smart_cheat || smart_learn)
+                _smart_tweak_res_sav(spell, RES_TELEPORT, smart_cheat ? 0xFFFFFFFF : cast->mon->smart);
+        }
+    }
+
     /* beholders prefer to gaze, but won't do so if adjacent */
     spell = mon_spells_find(spells, _id(MST_BOLT, GF_ATTACK));
     if (spell)
@@ -3879,7 +3969,7 @@ static void _ai_direct(mon_spell_cast_ptr cast)
         _remove_spell(spells, _id(MST_ANNOY, ANNOY_AMNESIA));
 
     /* require a direct shot to player for bolts */
-    if (!_clean_shot(cast->src, cast->dest, (is_pet(cast->mon) || is_friendly(cast->mon))))
+    if (!_clean_shot_mon(cast->mon, cast->src, cast->dest))
     {
         _remove_group(spells->groups[MST_BOLT], NULL);
         _remove_spell(spells, _id(MST_BALL, GF_ROCKET));
@@ -4075,7 +4165,22 @@ static void _ai_indirect(mon_spell_cast_ptr cast)
         }
         /* XXX Splash BA_LITE and BA_DARK */
 
-        /* XXX Bring back evil non-direct TELE_TO? */
+        /* Powerful, cunning monsters occasionally yank the player to them even
+         * without los. The spell handler gives the player a saving throw in
+         * this case. Kept rare, since it is the only spell left here. */
+        spell = mon_spells_find(spells, _id(MST_ANNOY, ANNOY_TELE_TO));
+        if ( spell
+          && !stupid
+          && cast->race->level >= 40
+          && (smart || (cast->race->flags1 & RF1_UNIQUE))
+          && cast->mon->cdis <= MAX_RANGE
+          && !quest_id_current()
+          && one_in_(5) )
+        {
+            spell->prob = 10;
+            if (smart_cheat || smart_learn)
+                _smart_tweak_res_sav(spell, RES_TELEPORT, smart_cheat ? 0xFFFFFFFF : cast->mon->smart);
+        }
     }
 }
 static void _ai_think(mon_spell_cast_ptr cast)
@@ -4139,15 +4244,75 @@ static mon_spell_ptr _choose_random(mon_spells_ptr spells)
     }
     return NULL; /* ?! */
 }
+/* Monsters with a healing spell may use it on a badly wounded ally in view
+ * (same side, i.e. not enemies) that is clearly worse off than themselves. */
+static void _ai_heal_ally(mon_spell_cast_ptr cast)
+{
+    mon_spell_ptr heal;
+    mon_ptr       best = NULL;
+    int           best_pct = 60, self_pct, i;
+
+    cast->ally = NULL;
+    cast->flags &= ~MSC_HEAL_ALLY;
+    if (!cast->mon) return;
+    if (cast->race->flags2 & RF2_STUPID) return;
+    heal = mon_spells_find(cast->race->spells, _id(MST_HEAL, HEAL_SELF));
+    if (!heal) return;
+
+    self_pct = cast->mon->hp * 100 / MAX(1, cast->mon->maxhp);
+    for (i = 1; i < m_max; i++)
+    {
+        mon_ptr tgt = &m_list[i];
+        int     pct;
+        if (!tgt->r_idx || tgt->id == cast->mon->id) continue;
+        if (is_pet(tgt) != is_pet(cast->mon) || is_hostile(tgt) != is_hostile(cast->mon)) continue;
+        if (are_enemies(cast->mon, tgt)) continue;
+        if (tgt->hp >= tgt->maxhp) continue;
+        pct = tgt->hp * 100 / MAX(1, tgt->maxhp);
+        if (pct >= best_pct || pct + 15 >= self_pct) continue;
+        if (distance(cast->src.y, cast->src.x, tgt->fy, tgt->fx) > MAX_RANGE) continue;
+        if (!_projectable(cast->src, point(tgt->fx, tgt->fy))) continue;
+        best = tgt;
+        best_pct = pct;
+    }
+    if (!best) return;
+    heal->prob = MAX(heal->prob, 10 + (60 - best_pct) / 2); /* more urgent as the ally nears death */
+    cast->ally = best;
+    cast->flags |= MSC_HEAL_ALLY;
+}
+
+/* Discourage casting the same spell twice in a row */
+static void _ai_no_repeat(mon_spell_cast_ptr cast)
+{
+    mon_spell_ptr spell;
+    if (!cast->mon || !cast->mon->last_spell_type) return;
+    spell = mon_spells_find(cast->race->spells, _id(cast->mon->last_spell_type - 1, cast->mon->last_spell_effect));
+    if (spell) spell->prob /= 2;
+}
+
 static void _ai_choose(mon_spell_cast_ptr cast)
 {
     cast->spell = _choose_random(cast->race->spells);
+    if (!cast->spell || cast->spell->id.type != MST_HEAL)
+    {
+        cast->flags &= ~MSC_HEAL_ALLY;
+        cast->ally = NULL;
+    }
+}
+
+static void _ai_remember(mon_spell_cast_ptr cast)
+{
+    if (!cast->mon || !cast->spell) return;
+    cast->mon->last_spell_type = cast->spell->id.type + 1; /* 0 means none; MST_BREATH is 0 */
+    cast->mon->last_spell_effect = cast->spell->id.effect;
 }
 static bool _default_ai(mon_spell_cast_ptr cast)
 {
     if (!cast->race->spells) return FALSE;
     _ai_init(cast->race->spells);
     _ai_think(cast);
+    _ai_heal_ally(cast);
+    _ai_no_repeat(cast);
     _ai_choose(cast);
     return cast->spell != NULL;
 }
@@ -4364,16 +4529,17 @@ static void _ai_think_friend(mon_spell_cast_ptr cast)
 
     assert(is_friendly(cast->mon));
 
-    if (cast->race->flags2 & RF2_STUPID) return; /* Your friend is stupid. What did you expect? */
-
-    _remove_spell(spells, _id(MST_ANNOY, ANNOY_SHRIEK));
-    _remove_spell(spells, _id(MST_ANNOY, ANNOY_TRAPS));
-
-    /* Prevent collateral damage XXX PF_BALL_SPELL is a horrible misnomer XXX */
+    /* Prevent collateral damage XXX PF_BALL_SPELL is a horrible misnomer XXX
+     * (Even stupid friends should not breathe on the player.) */
     if (!(p_ptr->pet_extra_flags & PF_BALL_SPELL))
     {
         _avoid_hurting_player(cast);
     }
+
+    if (cast->race->flags2 & RF2_STUPID) return; /* Your friend is stupid. What did you expect? */
+
+    _remove_spell(spells, _id(MST_ANNOY, ANNOY_SHRIEK));
+    _remove_spell(spells, _id(MST_ANNOY, ANNOY_TRAPS));
 }
 
 static void _ai_think_mon(mon_spell_cast_ptr cast)
@@ -4444,7 +4610,7 @@ static void _ai_think_mon(mon_spell_cast_ptr cast)
         spell->prob = 0;
 
     /* require a direct shot for bolts */
-    if (!_clean_shot(cast->src, cast->dest, (is_pet(cast->mon) || is_friendly(cast->mon))))
+    if (!_clean_shot_mon(cast->mon, cast->src, cast->dest))
     {
         _remove_group(spells->groups[MST_BOLT], NULL);
         _remove_spell(spells, _id(MST_BALL, GF_ROCKET));
@@ -4473,6 +4639,8 @@ static bool _default_ai_mon(mon_spell_cast_ptr cast)
     if (!_choose_target(cast)) return FALSE;
     _ai_init(cast->race->spells);
     _ai_think_mon(cast);
+    _ai_heal_ally(cast);
+    _ai_no_repeat(cast);
     _ai_choose(cast);
     return cast->spell != NULL;
 }
@@ -5737,3 +5905,259 @@ void blue_mage_learn_spell(void)
     }
 }
 
+/*************************************************************************
+ * Wizard AI Inspector
+ ************************************************************************/
+static cptr _pack_ai_name(int ai)
+{
+    switch (ai)
+    {
+    case AI_SEEK: return "Seek";
+    case AI_LURE: return "Lure";
+    case AI_GUARD_MON: return "Guard Monster";
+    case AI_GUARD_POS: return "Guard Position";
+    case AI_FEAR: return "Fear";
+    case AI_SHOOT: return "Shoot";
+    case AI_MAINTAIN_DISTANCE: return "Maintain Distance";
+    }
+    return "?";
+}
+
+typedef struct {
+    mon_spell_ptr spell;
+    int           count;
+    int           ally_ct;
+} _ai_sample_t;
+
+#define _AI_SAMPLE_MAX 64
+
+/* Run the spell AI 'trials' times without casting anything and tally what it
+ * picks. Returns the number of trials that produced no spell. */
+static int _ai_sample(mon_ptr mon, int trials, _ai_sample_t *tbl, int *tbl_ct)
+{
+    int i, j, none = 0;
+    bool vs_player = is_hostile(mon);
+
+    *tbl_ct = 0;
+    for (i = 0; i < trials; i++)
+    {
+        mon_spell_cast_t cast = {0};
+        bool             ok;
+
+        if (vs_player)
+        {
+            _spell_cast_init(&cast, mon);
+            ok = _default_ai(&cast);
+        }
+        else
+        {
+            _spell_cast_init_mon(&cast, mon);
+            ok = _default_ai_mon(&cast);
+        }
+        if (!ok || !cast.spell)
+        {
+            none++;
+            continue;
+        }
+        for (j = 0; j < *tbl_ct; j++)
+            if (tbl[j].spell == cast.spell) break;
+        if (j == *tbl_ct)
+        {
+            if (*tbl_ct >= _AI_SAMPLE_MAX) continue;
+            tbl[j].spell = cast.spell;
+            tbl[j].count = 0;
+            tbl[j].ally_ct = 0;
+            (*tbl_ct)++;
+        }
+        tbl[j].count++;
+        if (cast.flags & MSC_HEAL_ALLY) tbl[j].ally_ct++;
+    }
+    return none;
+}
+
+static int _ai_sample_cmp(const void *a, const void *b)
+{
+    return ((const _ai_sample_t *)b)->count - ((const _ai_sample_t *)a)->count;
+}
+
+/* The spell AI would refuse to even consider casting at the player for these
+ * reasons (mirrors _can_cast and mon_spell_cast). */
+static cptr _ai_gate(mon_ptr mon)
+{
+    if (!mon_race(mon)->spells) return "no spells";
+    if (MON_CONFUSED(mon)) return "confused";
+    if (MON_CSLEEP(mon)) return "asleep";
+    if (!is_hostile(mon)) return NULL; /* casts at monsters instead */
+    if (mon->mflag & MFLAG_NICE) return "nice (player's free turn)";
+    if (!is_aware(mon)) return "unaware of player";
+    if (mon->cdis > MAX_RANGE && !mon->target_y) return "out of range";
+    return NULL;
+}
+
+void mon_ai_wizard(mon_ptr mon, doc_ptr doc)
+{
+    mon_race_ptr  race = mon_race(mon);
+    pack_info_t  *pack = pack_info_ptr(mon->id);
+    char          name[MAX_NLEN];
+    int           i;
+    cptr          gate;
+
+    monster_desc(name, mon, MD_IGNORE_HALLU | MD_INDEF_VISIBLE);
+    name[0] = toupper((unsigned char)name[0]);
+    doc_printf(doc, "<color:y>%s</color> (#%d, race %d, level %d)\n", name, mon->id, mon->r_idx, race->level);
+    doc_printf(doc, "HP %d/%d (%d%%)  Dist %d  Speed %+d  %s%s%s\n",
+        mon->hp, mon->maxhp, mon->hp * 100 / MAX(1, mon->maxhp), mon->cdis, mon->mspeed - 110,
+        is_pet(mon) ? "<color:G>Pet</color>" : (is_hostile(mon) ? "<color:r>Hostile</color>" : "<color:B>Friendly</color>"),
+        _projectable(point(mon->fx, mon->fy), point(px, py)) ? "  In LOS" : "  No LOS",
+        is_aware(mon) ? "" : "  <color:D>Unaware</color>");
+    doc_printf(doc, "Status:%s%s%s%s%s%s\n",
+        MON_CSLEEP(mon) ? " Asleep" : "",
+        MON_CONFUSED(mon) ? " Confused" : "",
+        MON_STUNNED(mon) ? format(" Stunned(%d)", MON_STUNNED(mon)) : "",
+        MON_MONFEAR(mon) ? " Afraid" : "",
+        mon_ai_will_run(mon->id) ? " <color:o>Running</color>" : "",
+        (!MON_CSLEEP(mon) && !MON_CONFUSED(mon) && !MON_STUNNED(mon) && !MON_MONFEAR(mon)) ? " Normal" : "");
+
+    doc_printf(doc, "Melee: ~%d dam/turn%s\n", mon_race_avg_melee_dam(race),
+        mon_race_weak_melee(race) ? " <color:o>(frail in melee)</color>" : "");
+    doc_printf(doc, "Anger %d  Mana %d", mon->anger, mon->mana);
+    if (mon->last_spell_type)
+    {
+        mon_spell_ptr last = race->spells ? mon_spells_find(race->spells, _id(mon->last_spell_type - 1, mon->last_spell_effect)) : NULL;
+        if (last)
+        {
+            doc_insert(doc, "  Last spell: ");
+            mon_spell_doc(last, doc);
+        }
+    }
+    doc_newline(doc);
+
+    if (pack)
+    {
+        doc_printf(doc, "Pack #%d: %d members, AI <color:B>%s</color>", pack->pack_idx, pack->count, _pack_ai_name(pack->ai));
+        if (pack->leader_idx) doc_printf(doc, ", leader #%d%s", pack->leader_idx, pack->leader_idx == mon->id ? " (self)" : "");
+        if (pack->ai == AI_MAINTAIN_DISTANCE) doc_printf(doc, ", distance %d", pack->distance);
+        if (pack->ai == AI_GUARD_POS) doc_printf(doc, ", guarding (%d,%d)", pack->guard_x, pack->guard_y);
+        if (pack->ai == AI_GUARD_MON) doc_printf(doc, ", guarding #%d", pack->guard_idx);
+        doc_newline(doc);
+    }
+    else
+        doc_insert(doc, "No pack\n");
+
+    doc_insert(doc, "Knows about player:");
+    if (!mon->smart) doc_insert(doc, " nothing");
+    for (i = 0; i < RES_MAX; i++)
+        if (mon->smart & (1U << i)) doc_printf(doc, " %s", res_name(i));
+    if (mon->smart & (1U << SM_REFLECTION)) doc_insert(doc, " Reflection");
+    if (mon->smart & (1U << SM_FREE_ACTION)) doc_insert(doc, " Free-Action");
+    doc_newline(doc);
+
+    /* The turn decision, with the terms behind each score */
+    {
+        mon_ai_decision_t d;
+        doc_insert(doc, "\n<color:G>Turn decision:</color>\n");
+        mon_ai_decide(mon, FALSE, &d);
+        mon_ai_doc(&d, doc);
+        if (race->spells && !mon->anger && mon->mana > 0 && race->spells->freq <= 50)
+        {
+            doc_printf(doc, "<color:D>Anti-streak: after casting, the cast option is dropped %d%% of the time.</color>\n",
+                mon->mana * 100 / (1 + mon->mana));
+        }
+    }
+
+    if (!race->spells)
+    {
+        doc_insert(doc, "\nNo spells.\n");
+        return;
+    }
+
+    gate = _ai_gate(mon);
+    if (gate)
+        doc_printf(doc, "<color:o>Currently would not cast: %s</color>\n", gate);
+
+    /* Empirical distribution of AI choices from the current situation */
+    {
+        _ai_sample_t tbl[_AI_SAMPLE_MAX];
+        int          ct, none, trials = 1000;
+        none = _ai_sample(mon, trials, tbl, &ct);
+        qsort(tbl, ct, sizeof(_ai_sample_t), _ai_sample_cmp);
+        doc_printf(doc, "\n<color:G>AI choices over %d samples%s:</color>\n", trials,
+            is_hostile(mon) ? " (vs player)" : " (vs monsters)");
+        for (i = 0; i < ct; i++)
+        {
+            doc_printf(doc, "%3d.%d%% ", tbl[i].count * 100 / trials, (tbl[i].count * 1000 / trials) % 10);
+            mon_spell_doc(tbl[i].spell, doc);
+            if (tbl[i].ally_ct)
+                doc_printf(doc, " <color:G>(on an ally %d%%)</color>", tbl[i].ally_ct * 100 / tbl[i].count);
+            doc_newline(doc);
+        }
+        if (none)
+            doc_printf(doc, "%3d.%d%% <color:D>(no spell)</color>\n", none * 100 / trials, (none * 1000 / trials) % 10);
+    }
+
+    /* One sample with the full weight table */
+    doc_insert(doc, "\n<color:G>Weights for one sample:</color>\n");
+    mon_spell_wizard(mon, NULL, doc);
+}
+
+/* One line per visible monster, nearest first */
+static int _ai_dist_cmp(const void *a, const void *b)
+{
+    return m_list[*(const int *)a].cdis - m_list[*(const int *)b].cdis;
+}
+
+void mon_ai_wizard_summary(doc_ptr doc)
+{
+    int *idx, ct = 0, i;
+
+    C_MAKE(idx, MAX(1, m_max), int);
+    for (i = 1; i < m_max; i++)
+    {
+        mon_ptr mon = &m_list[i];
+        if (!mon->r_idx || !mon->ml) continue;
+        idx[ct++] = i;
+    }
+    qsort(idx, ct, sizeof(int), _ai_dist_cmp);
+
+    doc_insert(doc, "<style:table><color:G>Name<tab:28>Dist<tab:34>HP%<tab:40>Side<tab:50>Pack AI<tab:66>Cast%<tab:73>Top choice</color>\n");
+    for (i = 0; i < ct; i++)
+    {
+        mon_ptr       mon = &m_list[idx[i]];
+        mon_race_ptr  race = mon_race(mon);
+        pack_info_t  *pack = pack_info_ptr(mon->id);
+        char          name[MAX_NLEN];
+        cptr          gate = _ai_gate(mon);
+
+        monster_desc(name, mon, MD_IGNORE_HALLU | MD_INDEF_VISIBLE);
+        doc_printf(doc, "%-27.27s<tab:28>%d<tab:34>%d<tab:40>%s<tab:50>%s",
+            name, mon->cdis, mon->hp * 100 / MAX(1, mon->maxhp),
+            is_pet(mon) ? "Pet" : (is_hostile(mon) ? "Hostile" : "Friendly"),
+            pack ? _pack_ai_name(pack->ai) : "-");
+        if (mon_ai_will_run(mon->id)) doc_insert(doc, "<color:o>*</color>");
+        doc_printf(doc, "<tab:66>%d", mon_ai_cast_score(mon));
+        doc_insert(doc, "<tab:73>");
+        if (!race->spells)
+            doc_insert(doc, "<color:D>melee only</color>");
+        else if (gate)
+            doc_printf(doc, "<color:D>%s</color>", gate);
+        else
+        {
+            _ai_sample_t tbl[_AI_SAMPLE_MAX];
+            int          tbl_ct, none, j, best = -1;
+            none = _ai_sample(mon, 200, tbl, &tbl_ct);
+            for (j = 0; j < tbl_ct; j++)
+                if (best < 0 || tbl[j].count > tbl[best].count) best = j;
+            if (best >= 0 && tbl[best].count >= none)
+            {
+                mon_spell_doc(tbl[best].spell, doc);
+                doc_printf(doc, " %d%%", tbl[best].count / 2);
+            }
+            else
+                doc_insert(doc, "<color:D>(no spell)</color>");
+        }
+        doc_newline(doc);
+    }
+    if (!ct) doc_insert(doc, "No visible monsters.\n");
+    doc_insert(doc, "</style>\n<color:D>* = running away. Cast% = chance to try a spell this turn.</color>\n");
+    C_KILL(idx, MAX(1, m_max), int);
+}

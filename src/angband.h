@@ -60,6 +60,7 @@
 
 #include "types.h"
 #include "externs.h"
+#include "mon_ai.h"
 
 #include "message.h"
 #include "mut.h"
