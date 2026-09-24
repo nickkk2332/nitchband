@@ -1209,7 +1209,6 @@ extern bool retaliation_hack;
 extern int retaliation_count;
 extern bool make_attack_normal(int m_idx);
 extern void process_monsters(void);
-extern int mon_spell_chance(mon_ptr m_ptr);
 extern bool mon_ai_will_run(int m_idx);
 extern bool set_monster_csleep(int m_idx, int v);
 extern bool set_monster_fast(int m_idx, int v);

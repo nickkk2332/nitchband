@@ -6052,13 +6052,25 @@ void mon_ai_wizard(mon_ptr mon, doc_ptr doc)
     if (mon->smart & (1U << SM_FREE_ACTION)) doc_insert(doc, " Free-Action");
     doc_newline(doc);
 
+    /* The turn decision, with the terms behind each score */
+    {
+        mon_ai_decision_t d;
+        doc_insert(doc, "\n<color:G>Turn decision:</color>\n");
+        mon_ai_decide(mon, FALSE, &d);
+        mon_ai_doc(&d, doc);
+        if (race->spells && !mon->anger && mon->mana > 0 && race->spells->freq <= 50)
+        {
+            doc_printf(doc, "<color:D>Anti-streak: after casting, the cast option is dropped %d%% of the time.</color>\n",
+                mon->mana * 100 / (1 + mon->mana));
+        }
+    }
+
     if (!race->spells)
     {
         doc_insert(doc, "\nNo spells.\n");
         return;
     }
 
-    doc_printf(doc, "\nSpell chance this turn: <color:R>%d%%</color> (race %d%%)\n", mon_spell_chance(mon), race->spells->freq);
     gate = _ai_gate(mon);
     if (gate)
         doc_printf(doc, "<color:o>Currently would not cast: %s</color>\n", gate);
@@ -6122,7 +6134,7 @@ void mon_ai_wizard_summary(doc_ptr doc)
             is_pet(mon) ? "Pet" : (is_hostile(mon) ? "Hostile" : "Friendly"),
             pack ? _pack_ai_name(pack->ai) : "-");
         if (mon_ai_will_run(mon->id)) doc_insert(doc, "<color:o>*</color>");
-        doc_printf(doc, "<tab:66>%d", race->spells ? mon_spell_chance(mon) : 0);
+        doc_printf(doc, "<tab:66>%d", mon_ai_cast_score(mon));
         doc_insert(doc, "<tab:73>");
         if (!race->spells)
             doc_insert(doc, "<color:D>melee only</color>");
