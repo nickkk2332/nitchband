@@ -1844,6 +1844,7 @@ static void _wiz_ai_kite(void)
 {
     int     r_idx, trials, turns, i, t, k;
     int     player_turns = 0, player_adjacent = 0, fails = 0, player_energy;
+    int     test_speed = p_ptr->pspeed;
     bool    chase;
     char    buf[81];
     int     start_y = py, start_x = px;
@@ -1904,9 +1905,12 @@ static void _wiz_ai_kite(void)
         do_cmd_wiz_zap_all();
         if ((py != start_y || px != start_x) && cave_empty_bold(start_y, start_x))
             move_player_effect(start_y, start_x, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
-        /* Start every trial fresh: no slow, blindness, drained stats, ... */
+        /* Start every trial fresh: no slow, blindness, drained stats, ...
+         * and recompute speed etc. even if nothing needed curing */
         do_cmd_wiz_cure_all();
+        p_ptr->update |= PU_BONUS | PU_HP | PU_MANA;
         handle_stuff();
+        if (i == 0) test_speed = p_ptr->pspeed;
         m_idx = _wiz_kite_place(r_idx);
         if (!m_idx)
         {
@@ -1943,6 +1947,8 @@ static void _wiz_ai_kite(void)
     WIPE(&mon_ai_stats, mon_ai_stats_t);
     do_cmd_wiz_zap_all();
     do_cmd_wiz_cure_all();
+    p_ptr->update |= PU_BONUS | PU_HP | PU_MANA;
+    handle_stuff();
     if ((py != start_y || px != start_x) && cave_empty_bold(start_y, start_x))
         move_player_effect(start_y, start_x, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
     wiz_immortal = FALSE;
@@ -1964,7 +1970,7 @@ static void _wiz_ai_kite(void)
 
     doc = doc_alloc(80);
     doc_printf(doc, "<color:G>AI Kite Test:</color> <color:y>%s</color> vs you (%s, speed %+d)\n\n",
-        r_name + r_info[r_idx].name, chase ? "chasing" : "standing still", p_ptr->pspeed - 110);
+        r_name + r_info[r_idx].name, chase ? "chasing" : "standing still", test_speed - 110);
     doc_printf(doc, "%d trials x %d game turns", trials - fails, turns);
     if (fails) doc_printf(doc, " (%d could not be set up)", fails);
     doc_newline(doc);
