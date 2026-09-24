@@ -1427,7 +1427,7 @@ static void _list_monsters_aux(_mon_list_ptr list, rect_t display_rect, int mode
                         char out_val[20];
 
                         if (m_ptr->nickname)
-                            strcpy(out_val, quark_str(m_ptr->nickname));
+                            my_strcpy(out_val, quark_str(m_ptr->nickname), sizeof(out_val));
                         else
                             strcpy(out_val, "");
 

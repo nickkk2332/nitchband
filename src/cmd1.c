@@ -1747,9 +1747,9 @@ static void innate_attacks(s16b m_idx, bool *fear, bool *mdeath, int mode)
                             }
                             break;
                         case GF_INERT:
-                        	if (r_ptr->flags3 & RFR_RES_INER)
+                        	if (r_ptr->flagsr & RFR_RES_INER)
                         	{
-                        		mon_lore_3(m_ptr, RFR_RES_INER);
+                        		mon_lore_r(m_ptr, RFR_RES_INER);
                         		e = 0;
                         	}
                         	break;

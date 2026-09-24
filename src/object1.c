@@ -621,8 +621,10 @@ bool obj_learn_flag(object_type *o_ptr, int which)
     if (!obj_is_identified(o_ptr))
     {
         u32b flgs[OF_ARRAY_SIZE];
+        /* Already known: skip the obj_flags() rebuild (hot via telepathy) */
+        if (have_flag(o_ptr->known_flags, which)) return FALSE;
         obj_flags(o_ptr, flgs);
-        if (have_flag(flgs, which) && !have_flag(o_ptr->known_flags, which))
+        if (have_flag(flgs, which))
         {
             add_flag(o_ptr->known_flags, which);
             return TRUE;

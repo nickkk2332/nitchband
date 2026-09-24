@@ -2025,7 +2025,7 @@ static void do_name_pet(void)
         if (m_ptr->nickname)
         {
             /* Start with the old inscription */
-            strcpy(out_val, quark_str(m_ptr->nickname));
+            my_strcpy(out_val, quark_str(m_ptr->nickname), sizeof(out_val));
         }
 
         /* Get a new inscription (possibly empty) */

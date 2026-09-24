@@ -5109,12 +5109,12 @@ static cptr process_dungeon_file_expr(char **sp, char *fp)
             else if (streq(b+1, "RACE"))
             {
                 v = get_true_race()->name;
-                while (1)
+                if (strchr(v, ' '))
                 {
-                    unsigned int paikka = strpos(" ", v);
-                    if (!paikka) break;
-                    sprintf(tmp, v);
-                    tmp[paikka - 1] = '-';
+                    char *t;
+                    my_strcpy(tmp, v, sizeof(tmp));
+                    for (t = tmp; *t; t++)
+                        if (*t == ' ') *t = '-';
                     v = tmp;
                 }
             }

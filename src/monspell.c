@@ -2991,7 +2991,7 @@ static void _weird(void)
     case MON_BANOR:
     case MON_LUPART: {
         int k, hp = 0, maxhp = 0;
-        point_t where;
+        point_t where = _current.mon ? point(_current.mon->fx, _current.mon->fy) : point(px, py);
         bool viesti = FALSE;
 
         if (!r_info[MON_BANOR].cur_num || !r_info[MON_LUPART].cur_num) return;
@@ -5453,17 +5453,16 @@ static vec_ptr _prompt_spell_group(mon_race_ptr race)
                         spells = _spells_plr(race, g->filter, i);
                         okei = TRUE;
                     }
-                    else vec_free(spells);
                 }
-                else vec_free(spells);
             }
-            vec_free(groups);
-            if (okei) return spells;
-            else if (spells)
+            if (okei)
             {
-                vec_free(spells);
-                spells = NULL;
+                vec_free(groups);
+                return spells;
             }
+            /* Fall through to the interactive prompt; groups stays valid */
+            vec_free(spells);
+            spells = NULL;
         }
     }
 

@@ -68,7 +68,7 @@
  * Evaluate to TRUE "P" percent of the time
  */
 #define magik(P) \
-    ((P) <= 0 || randint0(100) < (P))
+    (randint0(100) < (P))
 
 
 #define one_in_(X) \

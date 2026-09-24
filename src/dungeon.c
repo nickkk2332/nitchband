@@ -2291,7 +2291,7 @@ static void process_world_aux_curse(void)
         }
 
         /* Allergy */
-        if ((p_ptr->cursed & OFC_ALLERGY) && (!p_ptr->unwell) && (one_in_(888)) && (!get_race()->flags & RACE_IS_NONLIVING))
+        if ((p_ptr->cursed & OFC_ALLERGY) && (!p_ptr->unwell) && (one_in_(888)) && (!(get_race()->flags & RACE_IS_NONLIVING)))
         {
             msg_print("Your eyes suddenly feel very itchy...");
             disturb(0,0);
@@ -2998,22 +2998,21 @@ static void process_world(void)
     /*** Check monster arena ***/
     if (p_ptr->inside_battle && !p_ptr->leaving)
     {
-        int i2, j2;
+        int i2;
         int win_m_idx = 0;
         int number_mon = 0;
 
-        /* Count all hostile monsters */
-        for (i2 = 0; i2 < cur_wid; ++i2)
-            for (j2 = 0; j2 < cur_hgt; j2++)
-            {
-                cave_type *c_ptr = &cave[j2][i2];
+        /* Count all hostile monsters (walk the monster list, not the map) */
+        for (i2 = 1; i2 < m_max; i2++)
+        {
+            monster_type *m_ptr = &m_list[i2];
 
-                if ((c_ptr->m_idx > 0) && (c_ptr->m_idx != p_ptr->riding))
-                {
-                    number_mon++;
-                    win_m_idx = c_ptr->m_idx;
-                }
-            }
+            if (!m_ptr->r_idx) continue;
+            if (i2 == p_ptr->riding) continue;
+            if (!in_bounds2(m_ptr->fy, m_ptr->fx) || cave[m_ptr->fy][m_ptr->fx].m_idx != i2) continue;
+            number_mon++;
+            win_m_idx = i2;
+        }
 
         if (number_mon == 0)
         {
@@ -5445,7 +5444,9 @@ static void dungeon(bool load_game)
         notice_stuff();
 
         /* Handle "p_ptr->update" and "p_ptr->redraw" and "p_ptr->window" */
+        defer_map_windows = TRUE;
         handle_stuff();
+        defer_map_windows = FALSE;
 
         /* Hack -- Hilite the player */
         move_cursor_relative(py, px);
@@ -5472,7 +5473,9 @@ static void dungeon(bool load_game)
         notice_stuff();
 
         /* Handle "p_ptr->update" and "p_ptr->redraw" and "p_ptr->window" */
+        defer_map_windows = TRUE;
         handle_stuff();
+        defer_map_windows = FALSE;
 
         /* Hack -- Hilite the player */
         move_cursor_relative(py, px);
@@ -5491,7 +5494,9 @@ static void dungeon(bool load_game)
         notice_stuff();
 
         /* Handle "p_ptr->update" and "p_ptr->redraw" and "p_ptr->window" */
+        defer_map_windows = TRUE;
         handle_stuff();
+        defer_map_windows = FALSE;
 
         /* Hack -- Hilite the player */
         move_cursor_relative(py, px);

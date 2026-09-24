@@ -136,6 +136,8 @@ void vec_delete(vec_ptr vec, int i)
         vec->free(vec->objs[i]);
     for (j = i; j < vec->len - 1; j++)
         vec->objs[j] = vec->objs[j+1];
+    vec->len--;
+    vec->objs[vec->len] = NULL;
 }
 
 void vec_set(vec_ptr vec, int i, vptr obj)

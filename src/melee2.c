@@ -78,13 +78,7 @@ static bool _mon_travel_flow(monster_type *m_ptr, int *ty, int *tx)
 
     /* Reset the "queue" */
     _flow_head = _flow_tail = 0;
-    for (y = 0; y < MAX_HGT; y++)
-    {
-        for (x = 0; x < MAX_WID; x++)
-        {
-            _hinta[y][x] = 199;
-        }
-    }
+    memset(_hinta, 199, sizeof(_hinta));
 
     /* Add the target destination grid to the queue */
     (void)_mon_travel_flow_aux(r_ptr, *ty, *tx, 0, wall, TRUE);
@@ -93,12 +87,33 @@ static bool _mon_travel_flow(monster_type *m_ptr, int *ty, int *tx)
     /* Now process the queue */
     while (_flow_head != _flow_tail)
     {
+        int cost;
+        bool done = FALSE;
+
         /* Extract the next entry */
         y = _temp2_y[_flow_tail];
         x = _temp2_x[_flow_tail];
 
         /* Forget that entry */
         if (++_flow_tail == MAX_SHORT) _flow_tail = 0;
+
+        /* Stop early: entries leave the queue in cost order, so anything
+         * stamped from now on costs more than 'cost'. Once a grid next to
+         * the pet already costs no more than that, the answer is fixed and
+         * flooding the rest of the level is wasted work. */
+        cost = (_hinta[y][x] > 199) ? _hinta[y][x] - 199 : _hinta[y][x];
+        for (d = 0; d < 8; d++)
+        {
+            int ny = m_ptr->fy + ddy_ddd[d];
+            int nx = m_ptr->fx + ddx_ddd[d];
+            if (!in_bounds(ny, nx)) continue;
+            if (_hinta[ny][nx] < 199 && _hinta[ny][nx] <= cost)
+            {
+                done = TRUE;
+                break;
+            }
+        }
+        if (done) break;
 
         /* Add the "children" */
         for (d = 0; d < 8; d++)
@@ -122,6 +137,24 @@ static bool _mon_travel_flow(monster_type *m_ptr, int *ty, int *tx)
     }
 
     return (best != 199);
+}
+
+/*
+ * calculate_upkeep() scans every monster on the level. Pets consult it on
+ * each of their moves, so share one result per game turn; it is invalidated
+ * whenever a neglected pet leaves or turns hostile.
+ */
+static int  _upkeep_cache = -1;
+static s32b _upkeep_turn = -1;
+
+static int _cached_upkeep(void)
+{
+    if (_upkeep_cache < 0 || _upkeep_turn != game_turn)
+    {
+        _upkeep_cache = calculate_upkeep();
+        _upkeep_turn = game_turn;
+    }
+    return _upkeep_cache;
 }
 
 /*
@@ -213,6 +246,8 @@ static bool get_enemy_dir(int m_idx, int *mm)
             }
             else
             {
+                /* Cheap reject first: projectable() can never reach past its range */
+                if (distance(m_ptr->fy, m_ptr->fx, t_ptr->fy, t_ptr->fx) > (project_length ? project_length : MAX_RANGE) + 1) continue;
                 if (!projectable(m_ptr->fy, m_ptr->fx, t_ptr->fy, t_ptr->fx)) continue;
             }
 
@@ -2305,7 +2340,7 @@ static void process_monster(int m_idx)
     }
     else if ((is_pet(m_ptr)) && (p_ptr->csp * 15 <= p_ptr->msp * 14))
     {
-        int upkeep_factor = calculate_upkeep();
+        int upkeep_factor = _cached_upkeep();
         while ((upkeep_factor > SAFE_UPKEEP_PCT) && (p_ptr->upset_okay)) /* Neglected pets */
         {
             if (unique_is_friend(real_r_idx(m_ptr))) break;
@@ -2335,6 +2370,7 @@ static void process_monster(int m_idx)
                     cmsg_format(TERM_L_RED, "%^s disappears!", m_name);
                 }
                 delete_monster_idx(m_idx);
+                _upkeep_cache = -1;
                 return;
             }
             else /* Turn hostile */
@@ -2344,6 +2380,7 @@ static void process_monster(int m_idx)
                 msg_format("<color:G>%^s</color> feels neglected.", m_name);
                 cmsg_format(TERM_L_RED, "%^s gets angry!", m_name);
                 set_hostile(m_ptr);
+                _upkeep_cache = -1;
             }
         }
     }
@@ -2617,7 +2654,7 @@ static void process_monster(int m_idx)
             /* Try to multiply */
             if (is_pet(m_ptr))
             {
-                int upkeep = calculate_upkeep();
+                int upkeep = _cached_upkeep();
                 if (upkeep > 80)
                     allow = FALSE;
                 if (p_ptr->pet_extra_flags & PF_NO_BREEDING)
@@ -2625,6 +2662,7 @@ static void process_monster(int m_idx)
             }
             if (allow && multiply_monster(m_idx, FALSE, (is_pet(m_ptr) ? PM_FORCE_PET : 0)))
             {
+                _upkeep_cache = -1; /* a new pet changes the upkeep */
                 /* Take note if visible */
                 if (m_list[hack_m_idx_ii].ml)
                 {
@@ -3581,7 +3619,9 @@ static void process_monster(int m_idx)
                 /* Move the monster */
                 m_ptr->fy = ny;
                 m_ptr->fx = nx;
-                p_ptr->window |= PW_MONSTER_LIST; /* May have moved in our out of LOS */
+                /* Visibility changes are flagged by update_mon(); only a visible
+                 * monster's move can change the list (distance ordering) */
+                if (m_ptr->ml) p_ptr->window |= PW_MONSTER_LIST;
 
                 /* Update the monster */
                 update_mon(m_idx, TRUE);
@@ -3826,7 +3866,10 @@ static void process_monster(int m_idx)
     }
 
     /* Notice changes in view */
-    if (do_move && ((r_ptr->flags7 & (RF7_SELF_LD_MASK | RF7_HAS_DARK_1 | RF7_HAS_DARK_2))
+    /* update_mon_lite() ignores monsters beyond MAX_SIGHT + 3, so a lit monster
+     * moving far away (before and after its one-step move) changes nothing */
+    if (do_move && m_ptr->cdis <= MAX_SIGHT + 4
+        && ((r_ptr->flags7 & (RF7_SELF_LD_MASK | RF7_HAS_DARK_1 | RF7_HAS_DARK_2))
         || ((r_ptr->flags7 & (RF7_HAS_LITE_1 | RF7_HAS_LITE_2)) && !p_ptr->inside_battle)))
     {
         /* Update some things */

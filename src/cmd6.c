@@ -1241,8 +1241,11 @@ void ring_of_power(int dir)
             (void)dec_stat(A_CHR, 50, TRUE);
 
             /* Lose some experience (permanently) */
-            p_ptr->exp -= (p_ptr->exp / 4);
-            p_ptr->max_exp -= (p_ptr->exp / 4);
+            {
+                s32b loss = p_ptr->exp / 4;
+                p_ptr->exp -= loss;
+                p_ptr->max_exp -= loss;
+            }
             check_experience();
 
             break;
@@ -1460,28 +1463,18 @@ static void _do_capture_ball(object_type *o_ptr)
             increase_ball_num(cap_mon);
             if (cap_nickname)
             {
-                cptr t;
                 char *s;
                 char buf[80] = "";
 
+                /* Keep the part of the old inscription before any '#', then
+                 * append #'nickname', truncating rather than overflowing buf */
                 if (o_ptr->inscription)
-                    strcpy(buf, quark_str(o_ptr->inscription));
-                s = buf;
-                for (s = buf;*s && (*s != '#'); s++)
-                {
-                }
-                *s = '#';
-                s++;
-                *s++ = '\'';
-                t = quark_str(cap_nickname);
-                while (*t)
-                {
-                    *s = *t;
-                    s++;
-                    t++;
-                }
-                *s++ = '\'';
-                *s = '\0';
+                    my_strcpy(buf, quark_str(o_ptr->inscription), sizeof(buf));
+                s = strchr(buf, '#');
+                if (s) *s = '\0';
+                my_strcat(buf, "#'", sizeof(buf));
+                my_strcat(buf, quark_str(cap_nickname), sizeof(buf));
+                my_strcat(buf, "'", sizeof(buf));
                 o_ptr->inscription = quark_add(buf);
             }
         }

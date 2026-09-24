@@ -261,6 +261,7 @@ bool view_torch_grids;    /* Map remembers all torch-lit grids */
 bool view_unsafe_grids;    /* Map marked by detect traps */
 bool fresh_before;    /* Flush output while continuous command */
 bool fresh_after;    /* Flush output after monster's move */
+bool defer_map_windows = FALSE; /* Postpone costly map/list subwindows until the player's turn */
 bool fresh_message;    /* Flush output after every message */
 bool hilite_player;    /* Hilite the player with the cursor */
 bool display_path;    /* Display actual path before shooting */
