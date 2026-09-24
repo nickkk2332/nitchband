@@ -21,6 +21,7 @@
    and objects 'o' are also useful. Be sure to begin each statistics run
    with a fresh, newly created character.*/
 bool statistics_hack = FALSE;
+bool wiz_immortal = FALSE; /* take_hit() never kills (AI harness) */
 static vec_ptr _rand_arts = NULL;
 static vec_ptr _egos = NULL;
 
@@ -1788,6 +1789,208 @@ static void _wiz_ai_duel(void)
     do_cmd_redraw();
 }
 
+/*************************************************************************
+ * AI Kite Test
+ *
+ * Measures how one hostile monster behaves against the player: it starts
+ * next to you, and you either stand still or chase it (one step toward it
+ * per player turn at your real speed; you never attack). The player cannot
+ * die during the test (HP is topped up), but other effects of the monster's
+ * attacks are real, so use a throwaway character.
+ ************************************************************************/
+static void _wiz_player_chase_step(int m_idx)
+{
+    monster_type *m_ptr = &m_list[m_idx];
+    int d, best_d = -1, best_dist = distance(py, px, m_ptr->fy, m_ptr->fx);
+
+    for (d = 0; d < 8; d++)
+    {
+        int y = py + ddy_ddd[d], x = px + ddx_ddd[d];
+        int dist;
+        if (!in_bounds(y, x)) continue;
+        if (!cave_empty_bold(y, x)) continue;
+        if (!cave_have_flag_bold(y, x, FF_MOVE)) continue;
+        dist = distance(y, x, m_ptr->fy, m_ptr->fx);
+        if (dist < best_dist)
+        {
+            best_dist = dist;
+            best_d = d;
+        }
+    }
+    if (best_d >= 0)
+        move_player_effect(py + ddy_ddd[best_d], px + ddx_ddd[best_d], MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
+}
+
+static int _wiz_kite_place(int r_idx)
+{
+    int d, start = randint0(8);
+    for (d = 0; d < 8; d++)
+    {
+        int dir = (start + d) % 8;
+        int y = py + ddy_ddd[dir], x = px + ddx_ddd[dir];
+        int m_idx;
+        if (!in_bounds(y, x) || !cave_empty_bold(y, x)) continue;
+        if (!place_monster_aux(0, y, x, r_idx, PM_NO_KAGE | PM_NO_PET)) continue;
+        m_idx = cave[y][x].m_idx;
+        if (!m_idx) continue;
+        (void)set_monster_csleep(m_idx, 0);
+        m_list[m_idx].mflag &= ~MFLAG_NICE;
+        return m_idx;
+    }
+    return 0;
+}
+
+static void _wiz_ai_kite(void)
+{
+    int     r_idx, trials, turns, i, t, k;
+    int     player_turns = 0, player_adjacent = 0, fails = 0, player_energy;
+    bool    chase;
+    char    buf[81];
+    int     start_y = py, start_x = px;
+    s32b    old_game_turn = game_turn;
+    byte    old_max;
+    u32b    seed = 0, fingerprint = 0;
+    bool    old_rand_quick = FALSE;
+    u32b    old_rand_value = 0;
+    u16b    old_rand_place = 0;
+    u32b    old_rand_state[RAND_DEG];
+    mon_ai_stats_t s;
+    doc_ptr doc;
+
+    if (p_ptr->inside_arena || p_ptr->inside_battle || p_ptr->wild_mode || p_ptr->riding)
+    {
+        msg_print("Not here.");
+        return;
+    }
+    r_idx = _wiz_prompt_race("Monster? ");
+    if (!r_idx) return;
+    strcpy(buf, "50");
+    if (!msg_input("Number of trials? ", buf, 10)) return;
+    trials = atoi(buf);
+    if (trials < 1) return;
+    if (trials > 5000) trials = 5000;
+    strcpy(buf, "1000");
+    if (!msg_input("Game turns per trial? ", buf, 10)) return;
+    turns = atoi(buf);
+    if (turns < 10) turns = 10;
+    if (turns > 20000) turns = 20000;
+    strcpy(buf, "c");
+    if (!msg_input("Player (c)hases or (s)tands still? ", buf, 2)) return;
+    chase = (buf[0] != 's' && buf[0] != 'S');
+    strcpy(buf, "0");
+    if (!msg_input("Random seed (0 = don't fix)? ", buf, 12)) return;
+    seed = strtoul(buf, NULL, 10);
+    if (!get_check("This deletes every monster on the level, and the monster's attacks affect you for real (you cannot die). Continue? ")) return;
+
+    if (seed)
+    {
+        old_rand_quick = Rand_quick;
+        old_rand_value = Rand_value;
+        old_rand_place = Rand_place;
+        C_COPY(old_rand_state, Rand_state, RAND_DEG, u32b);
+        Rand_quick = FALSE;
+        Rand_state_init(seed);
+    }
+
+    old_max = r_info[r_idx].max_num;
+    statistics_hack = TRUE;
+    wiz_immortal = TRUE;
+    WIPE(&mon_ai_stats, mon_ai_stats_t);
+
+    for (i = 0; i < trials; i++)
+    {
+        int m_idx;
+
+        do_cmd_wiz_zap_all();
+        if ((py != start_y || px != start_x) && cave_empty_bold(start_y, start_x))
+            move_player_effect(start_y, start_x, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
+        /* Start every trial fresh: no slow, blindness, drained stats, ... */
+        do_cmd_wiz_cure_all();
+        handle_stuff();
+        m_idx = _wiz_kite_place(r_idx);
+        if (!m_idx)
+        {
+            fails++;
+            continue;
+        }
+        mon_ai_stats.m_idx = m_idx;
+        player_energy = 0;
+
+        for (t = 0; t < turns; t++)
+        {
+            game_turn++;
+            process_monsters();
+            p_ptr->chp = p_ptr->mhp;
+            if (!m_list[m_idx].r_idx || p_ptr->leaving || p_ptr->is_dead) break;
+
+            /* The scripted player acts at its real speed */
+            player_energy -= SPEED_TO_ENERGY(p_ptr->pspeed);
+            if (player_energy <= 0)
+            {
+                player_energy += 100;
+                player_turns++;
+                if (m_list[m_idx].cdis <= 1)
+                    player_adjacent++;  /* a melee chance for the player */
+                else if (chase)
+                    _wiz_player_chase_step(m_idx);
+            }
+        }
+        mon_ai_stats.m_idx = 0;
+        if (p_ptr->leaving || p_ptr->is_dead) break;
+    }
+
+    s = mon_ai_stats;
+    WIPE(&mon_ai_stats, mon_ai_stats_t);
+    do_cmd_wiz_zap_all();
+    do_cmd_wiz_cure_all();
+    if ((py != start_y || px != start_x) && cave_empty_bold(start_y, start_x))
+        move_player_effect(start_y, start_x, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
+    wiz_immortal = FALSE;
+    statistics_hack = FALSE;
+    game_turn = old_game_turn;
+    r_info[r_idx].max_num = old_max;
+    if (seed)
+    {
+        fingerprint = _wiz_rng_fingerprint();
+        Rand_quick = old_rand_quick;
+        Rand_value = old_rand_value;
+        Rand_place = old_rand_place;
+        C_COPY(Rand_state, old_rand_state, RAND_DEG, u32b);
+    }
+    p_ptr->chp = p_ptr->mhp;
+    p_ptr->update |= PU_MONSTERS | PU_BONUS | PU_HP;
+    p_ptr->redraw |= PR_MAP | PR_HP;
+    p_ptr->window |= PW_MONSTER_LIST;
+
+    doc = doc_alloc(80);
+    doc_printf(doc, "<color:G>AI Kite Test:</color> <color:y>%s</color> vs you (%s, speed %+d)\n\n",
+        r_name + r_info[r_idx].name, chase ? "chasing" : "standing still", p_ptr->pspeed - 110);
+    doc_printf(doc, "%d trials x %d game turns", trials - fails, turns);
+    if (fails) doc_printf(doc, " (%d could not be set up)", fails);
+    doc_newline(doc);
+    if (s.turns)
+    {
+        int per = s.turns;
+        doc_printf(doc, "Monster turns: %d, <color:R>%d%%</color> of them began next to you\n", s.turns, s.adjacent * 100 / per);
+        doc_printf(doc, "Your turns: %d, <color:R>%d%%</color> of them next to the monster (melee chances)\n",
+            player_turns, player_turns ? player_adjacent * 100 / player_turns : 0);
+        doc_insert(doc, "\n<color:G>Per 100 monster turns:</color>\n");
+        doc_printf(doc, "  Spells cast at you     %3d.%d\n", s.spells * 100 / per, (s.spells * 1000 / per) % 10);
+        doc_printf(doc, "  Blinked away           %3d.%d\n", s.blinks * 100 / per, (s.blinks * 1000 / per) % 10);
+        doc_printf(doc, "  Blinked you away       %3d.%d\n", s.blink_other * 100 / per, (s.blink_other * 1000 / per) % 10);
+        doc_printf(doc, "  Teleported you away    %3d.%d\n", s.tele_other * 100 / per, (s.tele_other * 1000 / per) % 10);
+        doc_printf(doc, "  Melee attacks on you   %3d.%d\n", s.melee * 100 / per, (s.melee * 1000 / per) % 10);
+        doc_insert(doc, "\n<color:G>Turn decisions (spellcasters):</color>\n");
+        for (k = 0; k < MAI_KIND_MAX; k++)
+            doc_printf(doc, "  %-26s %3d.%d\n", mon_ai_kind_name(k), s.kinds[k] * 100 / per, (s.kinds[k] * 1000 / per) % 10);
+    }
+    if (seed)
+        doc_printf(doc, "\nSeed %lu, RNG fingerprint <color:B>%08lX</color>\n", (unsigned long)seed, (unsigned long)fingerprint);
+    doc_display(doc, "AI Kite Test", 0);
+    doc_free(doc);
+    do_cmd_redraw();
+}
+
 extern void do_cmd_debug(void);
 void do_cmd_debug(void)
 {
@@ -2054,6 +2257,11 @@ void do_cmd_debug(void)
             doc_free(doc);
             do_cmd_redraw();
         }
+        break;
+
+    /* Measure one monster's behaviour against the player */
+    case 'K':
+        _wiz_ai_kite();
         break;
 
     /* Run many monster-vs-monster fights and report win rates */

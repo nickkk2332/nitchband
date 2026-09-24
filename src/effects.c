@@ -6513,6 +6513,10 @@ int take_hit(int damage_type, int damage, cptr hit_from)
         if (disciple_is_(DISCIPLE_TROIKA)) troika_effect(TROIKA_CHANCE);
     }
 
+    /* Wizard AI harness: the player cannot die (see ^A K) */
+    if (wiz_immortal && p_ptr->chp < 0)
+        p_ptr->chp = p_ptr->mhp;
+
     /* Dead player */
     if (p_ptr->chp < 0)
     {

@@ -2291,6 +2291,8 @@ static void process_monster(int m_idx)
 
     int             mm[8] = {0};
 
+    int             ai_kind = MAI_PHYSICAL;
+
     cave_type       *c_ptr;
     feature_type    *f_ptr;
 
@@ -2319,6 +2321,12 @@ static void process_monster(int m_idx)
     bool            is_riding_mon = (m_idx == p_ptr->riding);
 
     bool            see_m = mon_show_msg(m_ptr);
+
+    if (mon_ai_stats.m_idx == m_idx)
+    {
+        mon_ai_stats.turns++;
+        if (m_ptr->cdis <= 1) mon_ai_stats.adjacent++;
+    }
 
     /* Hack: Trump monsters blink continually for free.
        Note, if you move this code below, the monster actually spawns???  Probably,
@@ -2852,7 +2860,9 @@ static void process_monster(int m_idx)
 
         /* Weigh this turn's options (see mon_ai.c) and pick one */
         mon_ai_decide(m_ptr, blocked, &decision);
-        if (mon_ai_choose(&decision) == MAI_CAST)
+        ai_kind = mon_ai_choose(&decision);
+        if (mon_ai_stats.m_idx == m_idx) mon_ai_stats.kinds[ai_kind]++;
+        if (ai_kind == MAI_CAST)
         {
             bool counterattack = FALSE;
 
@@ -3349,6 +3359,7 @@ static void process_monster(int m_idx)
                 if (!p_ptr->riding || one_in_(2))
                 {
                     /* Do the attack */
+                    if (mon_ai_stats.m_idx == m_idx) mon_ai_stats.melee++;
                     (void)make_attack_normal(m_idx);
                     if ((r_ptr->flags2 & RF2_INVISIBLE) && p_ptr->see_inv && !m_ptr->ml)
                         update_mon(m_idx, FALSE);

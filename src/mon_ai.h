@@ -58,4 +58,19 @@ extern cptr mon_ai_kind_name(int kind);
 /* Describe a decision (options, odds and score terms) for the inspector. */
 extern void mon_ai_doc(mon_ai_decision_ptr d, doc_ptr doc);
 
+/* Behaviour counters for one monster, filled in while mon_ai_stats.m_idx
+ * names it (the ^A K wizard harness). */
+typedef struct {
+    int m_idx;              /* monster being measured; 0 = off */
+    int turns;              /* turns the monster took */
+    int adjacent;           /* ... that began next to the player */
+    int kinds[MAI_KIND_MAX];/* option picked (spellcasters only) */
+    int spells;             /* spells cast at the player */
+    int blinks;             /* blinked itself away */
+    int blink_other;        /* blinked the player away */
+    int tele_other;         /* teleported the player away */
+    int melee;              /* melee attacks on the player */
+} mon_ai_stats_t;
+extern mon_ai_stats_t mon_ai_stats;
+
 #endif

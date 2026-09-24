@@ -1445,6 +1445,7 @@ bool mon_spell_cast(mon_ptr mon, mon_spell_ai ai)
         }
 
         _ai_remember(&cast);
+        if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.spells++;
         _current = cast;
         _spell_cast_aux();
         memset(&_current, 0, sizeof(mon_spell_cast_t));
@@ -2152,6 +2153,7 @@ static void _escape(void)
     case ESCAPE_TELE_OTHER:
         if (_current.flags & MSC_DEST_PLAYER)
         {
+            if (mon_ai_stats.m_idx == _current.mon->id) mon_ai_stats.tele_other++;
             /* Duelist Unending Pursuit */
             if ( p_ptr->pclass == CLASS_DUELIST
               && p_ptr->duelist_target_idx == _current.mon->id
@@ -2202,6 +2204,7 @@ static void _m_tactic(void)
         {
             if (!p_ptr->blind && _current.mon->ml)
                 msg_format("%s blinks away.", _current.name);
+            if (mon_ai_stats.m_idx == _current.mon->id) mon_ai_stats.blinks++;
             if (_current.mon->id == p_ptr->riding)
                 teleport_player(10, 0);
             else teleport_away(_current.mon->id, 10, 0);
@@ -2212,6 +2215,7 @@ static void _m_tactic(void)
         if (_current.flags & MSC_DEST_PLAYER)
         {
             msg_format("%s blinks you away.", _current.name);
+            if (mon_ai_stats.m_idx == _current.mon->id) mon_ai_stats.blink_other++;
             if (res_save_default(RES_TELEPORT))
                 msg_print("You resist the effects!");
             else

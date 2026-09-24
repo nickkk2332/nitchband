@@ -5,6 +5,8 @@
 
 #include <assert.h>
 
+mon_ai_stats_t mon_ai_stats = {0};
+
 cptr mon_ai_kind_name(int kind)
 {
     switch (kind)
