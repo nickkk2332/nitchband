@@ -560,6 +560,14 @@ void mon_take_hit_mon(int m_idx, int dam, bool *fear, cptr note, int who)
  * Note that this function is responsible for about one to five percent
  * of the processor use in normal conditions...
  */
+static int mon_will_run(int m_idx);
+
+/* For the wizard AI inspector */
+bool mon_ai_will_run(int m_idx)
+{
+    return mon_will_run(m_idx) ? TRUE : FALSE;
+}
+
 static int mon_will_run(int m_idx)
 {
     monster_type *m_ptr = &m_list[m_idx];
@@ -2272,6 +2280,71 @@ static bool check_hp_for_feat_destruction(feature_type *f_ptr, monster_type *m_p
  *
  * A "direction" of "5" means "pick a random direction".
  */
+/* Chance (percent) that this monster tries a spell this turn: race frequency
+ * adjusted for glyphs, pack AI, anger, point-blank frailty and stun. Shared
+ * by process_monster() and the wizard AI inspector. */
+int mon_spell_chance(mon_ptr m_ptr)
+{
+    monster_race *r_ptr = &r_info[m_ptr->r_idx];
+    pack_info_t  *pack_ptr = pack_info_ptr(m_ptr->id);
+    int           freq;
+
+    if (!r_ptr->spells) return 0;
+    freq = r_ptr->spells->freq;
+
+    /* Increase spell frequency for pack AI or player glyphs of warding */
+    if (is_glyph_grid(&cave[py][px]))
+    {
+        freq = MAX(30, freq + 10);
+    }
+    else if (pack_ptr)
+    {
+        switch (pack_ptr->ai)
+        {
+        case AI_SHOOT:
+            freq = MAX(30, freq + 15);
+            break;
+        case AI_MAINTAIN_DISTANCE:
+            freq += MIN(freq/2, 15);
+            break;
+        case AI_LURE:
+        case AI_FEAR:
+        case AI_GUARD_POS:
+            freq += MIN(freq/2, 10);
+            break;
+        }
+    }
+
+    /* Angry monsters will eventually spell if they get too pissed off.
+     * Monsters are angered by distance attacks (spell casters/archers) */
+    freq += m_ptr->anger;
+
+    /* Frail casters next to the player act through their spells (the
+     * spell AI then favors blinking away) rather than trading blows */
+    if ( m_ptr->cdis <= 1
+      && is_hostile(m_ptr)
+      && (r_ptr->spells->groups[MST_TACTIC] || r_ptr->spells->groups[MST_ESCAPE])
+      && mon_race_weak_melee(r_ptr) )
+    {
+        freq += MAX(10, freq / 2);
+    }
+
+    if (freq > 100) freq = 100;
+
+    /* XXX Adapt spell frequency down if monster is stunned (EXPERIMENTAL)
+     * Sure, stunning effects fail rates, but not on innate spells (breaths).
+     * In fact, distance stunning gives no benefit against big breathers ...
+     * Try a sprite mindcrafter and you'll see what I mean. */
+    if (MON_STUNNED(m_ptr))
+    {
+        int s = MON_STUNNED(m_ptr);
+        int p = MAX(0, 100 - s);
+        freq = freq * p / 100;
+        if (freq < 1) freq = 1;
+    }
+    return freq;
+}
+
 static void process_monster(int m_idx)
 {
     monster_type    *m_ptr = &m_list[m_idx];
@@ -2799,7 +2872,6 @@ static void process_monster(int m_idx)
     if (r_ptr->spells)
     {
         int freq = r_ptr->spells->freq;
-        pack_info_t *pack_ptr = pack_info_ptr(m_idx);
         bool blocked = FALSE;
 
         /* XXX Block spells occasionally if the monster just cast (EXPERIMENTAL)
@@ -2809,46 +2881,7 @@ static void process_monster(int m_idx)
         if (!m_ptr->anger && m_ptr->mana > 0 && freq <= 50 && !one_in_(1 + m_ptr->mana))
             blocked = TRUE;
 
-        /* Increase spell frequency for pack AI or player glyphs of warding */
-        if (is_glyph_grid(&cave[py][px]))
-        {
-            freq = MAX(30, freq + 10);
-        }
-        else if (pack_ptr)
-        {
-            switch (pack_ptr->ai)
-            {
-            case AI_SHOOT:
-                freq = MAX(30, freq + 15);
-                break;
-            case AI_MAINTAIN_DISTANCE:
-                freq += MIN(freq/2, 15);
-                break;
-            case AI_LURE:
-            case AI_FEAR:
-            case AI_GUARD_POS:
-                freq += MIN(freq/2, 10);
-                break;
-            }
-        }
-
-        /* Angry monsters will eventually spell if they get too pissed off.
-         * Monsters are angered by distance attacks (spell casters/archers) */
-        freq += m_ptr->anger;
-
-        if (freq > 100) freq = 100;
-
-        /* XXX Adapt spell frequency down if monster is stunned (EXPERIMENTAL)
-         * Sure, stunning effects fail rates, but not on innate spells (breaths).
-         * In fact, distance stunning gives no benefit against big breathers ...
-         * Try a sprite mindcrafter and you'll see what I mean. */
-        if (MON_STUNNED(m_ptr))
-        {
-            int s = MON_STUNNED(m_ptr);
-            int p = MAX(0, 100 - s);
-            freq = freq * p / 100;
-            if (freq < 1) freq = 1;
-        }
+        freq = mon_spell_chance(m_ptr);
 
         /* Hack for Rage Mage Anti-magic Ray ... */
         if (!blocked && m_ptr->anti_magic_ct)

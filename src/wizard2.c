@@ -1549,6 +1549,192 @@ static void _wiz_stats_gather(int which_dungeon, int level, int reps)
 /*************************************************************************
  * Handle the ^A wizard commands. Perhaps there should be a UI for this?
  ************************************************************************/
+/*************************************************************************
+ * AI Duel Simulator
+ *
+ * Runs repeated one-on-one fights between two monster races next to the
+ * player, arena style (both sides "friendly", inside_battle set so they
+ * fight each other and leave the player alone), with messages muted.
+ * Useful for checking that AI changes do not shift balance unexpectedly.
+ * Monster-vs-monster only: it does not exercise the spell AI against the
+ * player. Monsters do not regenerate during a fight (that happens in
+ * process_world, which is not run).
+ ************************************************************************/
+static int _wiz_prompt_race(cptr prompt)
+{
+    char buf[81], *s;
+    int  idx;
+    buf[0] = 0;
+    if (!msg_input(prompt, buf, 80)) return 0;
+    for (s = buf; *s; s++) *s = tolower((unsigned char)*s); /* lookup is lower case */
+    idx = parse_lookup_monster(buf, 0);
+    if (!idx) idx = atoi(buf);
+    if (idx <= 0 || idx >= max_r_idx || !r_info[idx].name) return 0;
+    return idx;
+}
+
+static bool _wiz_duel_spots(point_t *a, point_t *b)
+{
+    int tries;
+    for (tries = 0; tries < 5000; tries++)
+    {
+        int y1 = py + randint0(13) - 6, x1 = px + randint0(13) - 6;
+        int y2 = y1 + randint0(13) - 6, x2 = x1 + randint0(13) - 6;
+        int d;
+        if (!in_bounds(y1, x1) || !in_bounds(y2, x2)) continue;
+        if (!cave_empty_bold(y1, x1) || !cave_empty_bold(y2, x2)) continue;
+        if (player_bold(y1, x1) || player_bold(y2, x2)) continue;
+        d = distance(y1, x1, y2, x2);
+        if (d < 3 || d > 6) continue;
+        if (distance(py, px, y1, x1) > 6 || distance(py, px, y2, x2) > 6) continue;
+        if (!projectable(y1, x1, y2, x2)) continue;
+        *a = point(x1, y1);
+        *b = point(x2, y2);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static int _wiz_duel_place(int r_idx, point_t pt, u16b tag)
+{
+    int m_idx;
+    if (!place_monster_aux(0, pt.y, pt.x, r_idx, PM_NO_KAGE | PM_NO_PET)) return 0;
+    m_idx = cave[pt.y][pt.x].m_idx;
+    if (!m_idx) return 0;
+    set_friendly(&m_list[m_idx]);
+    (void)set_monster_csleep(m_idx, 0);
+    m_list[m_idx].mflag &= ~MFLAG_NICE;
+    m_list[m_idx].nickname = tag; /* survives only while this monster does */
+    return m_idx;
+}
+
+static bool _wiz_duel_alive(int m_idx, u16b tag)
+{
+    return m_idx && m_list[m_idx].r_idx && m_list[m_idx].nickname == tag;
+}
+
+static void _wiz_ai_duel(void)
+{
+    int     r_a, r_b, trials, i, t;
+    int     wins_a = 0, wins_b = 0, draws = 0, fails = 0;
+    s32b    turns_total = 0, hp_a = 0, hp_b = 0;
+    point_t spot_a, spot_b;
+    char    buf[81];
+    const int max_turns = 5000; /* game turns (about 500 player turns at normal speed) */
+    u16b    tag_a = quark_add("<duel A>"), tag_b = quark_add("<duel B>");
+    s32b    old_game_turn = game_turn;
+    bool    old_battle = p_ptr->inside_battle;
+    int     old_invuln = p_ptr->invuln;
+    int     old_chp = p_ptr->chp;
+    byte    old_max_a, old_max_b;
+    doc_ptr doc;
+
+    if (p_ptr->inside_arena || p_ptr->inside_battle || p_ptr->wild_mode)
+    {
+        msg_print("Not here.");
+        return;
+    }
+    r_a = _wiz_prompt_race("First monster? ");
+    if (!r_a) return;
+    r_b = _wiz_prompt_race("Second monster? ");
+    if (!r_b) return;
+    strcpy(buf, "100");
+    if (!msg_input("Number of fights? ", buf, 10)) return;
+    trials = atoi(buf);
+    if (trials < 1) return;
+    if (trials > 10000) trials = 10000;
+    if (!get_check("This deletes every monster on the level. Continue? ")) return;
+    if (!_wiz_duel_spots(&spot_a, &spot_b))
+    {
+        msg_print("Could not find room for the fight near you. Try a more open area.");
+        return;
+    }
+
+    old_max_a = r_info[r_a].max_num;
+    old_max_b = r_info[r_b].max_num;
+    statistics_hack = TRUE;
+    p_ptr->invuln = 1000;
+
+    for (i = 0; i < trials; i++)
+    {
+        int a, b;
+        bool alive_a, alive_b;
+
+        do_cmd_wiz_zap_all();
+        p_ptr->inside_battle = TRUE;
+        a = _wiz_duel_place(r_a, spot_a, tag_a);
+        b = _wiz_duel_place(r_b, spot_b, tag_b);
+        if (!a || !b)
+        {
+            fails++;
+            p_ptr->inside_battle = old_battle;
+            continue;
+        }
+
+        for (t = 0; t < max_turns; t++)
+        {
+            game_turn++;
+            process_monsters();
+            alive_a = _wiz_duel_alive(a, tag_a);
+            alive_b = _wiz_duel_alive(b, tag_b);
+            if (!alive_a || !alive_b) break;
+            if (p_ptr->leaving || p_ptr->is_dead) break;
+        }
+        alive_a = _wiz_duel_alive(a, tag_a);
+        alive_b = _wiz_duel_alive(b, tag_b);
+        turns_total += t;
+        if (alive_a && !alive_b)
+        {
+            wins_a++;
+            hp_a += m_list[a].hp * 100 / MAX(1, m_list[a].maxhp);
+        }
+        else if (alive_b && !alive_a)
+        {
+            wins_b++;
+            hp_b += m_list[b].hp * 100 / MAX(1, m_list[b].maxhp);
+        }
+        else
+            draws++;
+
+        p_ptr->inside_battle = old_battle;
+        if (p_ptr->leaving || p_ptr->is_dead) break;
+    }
+
+    do_cmd_wiz_zap_all();
+    p_ptr->inside_battle = old_battle;
+    game_turn = old_game_turn;
+    p_ptr->invuln = old_invuln;
+    if (p_ptr->chp < old_chp) p_ptr->chp = old_chp;
+    r_info[r_a].max_num = old_max_a;
+    r_info[r_b].max_num = old_max_b;
+    statistics_hack = FALSE;
+    p_ptr->update |= PU_MONSTERS | PU_BONUS;
+    p_ptr->redraw |= PR_MAP | PR_HP;
+    p_ptr->window |= PW_MONSTER_LIST;
+
+    doc = doc_alloc(80);
+    doc_printf(doc, "<color:G>AI Duel:</color> <color:y>%s</color> vs <color:y>%s</color>\n\n", r_name + r_info[r_a].name, r_name + r_info[r_b].name);
+    i = wins_a + wins_b + draws;
+    doc_printf(doc, "Fights run: %d", i);
+    if (fails) doc_printf(doc, " (%d could not be set up)", fails);
+    doc_newline(doc);
+    if (i)
+    {
+        doc_printf(doc, "%-30.30s wins: <color:R>%3d%%</color>", r_name + r_info[r_a].name, wins_a * 100 / i);
+        if (wins_a) doc_printf(doc, "  (avg %d%% HP left)", hp_a / wins_a);
+        doc_newline(doc);
+        doc_printf(doc, "%-30.30s wins: <color:R>%3d%%</color>", r_name + r_info[r_b].name, wins_b * 100 / i);
+        if (wins_b) doc_printf(doc, "  (avg %d%% HP left)", hp_b / wins_b);
+        doc_newline(doc);
+        doc_printf(doc, "%-30.30s     : <color:R>%3d%%</color>\n", "Draws (time limit)", draws * 100 / i);
+        doc_printf(doc, "Average length: %d game turns (limit %d)\n", turns_total / i, max_turns);
+    }
+    doc_insert(doc, "\n<color:D>Monster-vs-monster only; no regeneration during fights.</color>\n");
+    doc_display(doc, "AI Duel", 0);
+    doc_free(doc);
+    do_cmd_redraw();
+}
+
 extern void do_cmd_debug(void);
 void do_cmd_debug(void)
 {
@@ -1801,18 +1987,37 @@ void do_cmd_debug(void)
         teleport_player(10, 0L);
         break;
 
-    /* Wizard Probe */
+    /* Wizard Probe: AI inspector for the targeted monster */
     case 'P':
-        if (target_who > 0)
+        if (target_who <= 0 || !m_list[target_who].r_idx)
+        {
+            if (!target_set(TARGET_KILL) || target_who <= 0) break;
+        }
         {
             mon_ptr mon = &m_list[target_who];
             doc_ptr doc = doc_alloc(80);
-            mon_spell_wizard(mon, NULL, doc);
-            doc_display(doc, "Spells", 0);
+            mon_ai_wizard(mon, doc);
+            doc_display(doc, "Monster AI", 0);
             doc_free(doc);
             do_cmd_redraw();
         }
         break;
+
+    /* Run many monster-vs-monster fights and report win rates */
+    case 'R':
+        _wiz_ai_duel();
+        break;
+
+    /* AI summary of every visible monster */
+    case 'Y':
+    {
+        doc_ptr doc = doc_alloc(100);
+        mon_ai_wizard_summary(doc);
+        doc_display(doc, "Monster AI Overview", 0);
+        doc_free(doc);
+        do_cmd_redraw();
+        break;
+    }
     case 'q':
     {
         quests_wizard();

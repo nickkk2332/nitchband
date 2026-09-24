@@ -755,6 +755,11 @@ struct monster_type
     byte minislow;
     s16b mana;
 
+    /* Last spell chosen by the spell AI (not saved), used to discourage
+     * casting the same spell over and over. Type is stored +1 (0 = none). */
+    byte last_spell_type;
+    s16b last_spell_effect;
+
     s32b pexp;    /* player experience gained (x100). kept <= r_ptr->mexp */
 };
 
