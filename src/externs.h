@@ -291,6 +291,7 @@ extern bool view_torch_grids;    /* Map remembers all torch-lit grids */
 extern bool view_unsafe_grids;    /* Map marked by detect traps */
 extern bool fresh_before;    /* Flush output while continuous command */
 extern bool fresh_after;    /* Flush output after monster's move */
+extern bool defer_map_windows;
 extern bool fresh_message;    /* Flush output after every message */
 extern bool hilite_player;    /* Hilite the player with the cursor */
 extern bool display_path;    /* Display actual path before shooting */

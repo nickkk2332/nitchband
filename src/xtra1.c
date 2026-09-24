@@ -5820,6 +5820,15 @@ void window_stuff(void)
     /* Nothing to do */
     if (!p_ptr->window) return;
 
+    /* Rebuilding the map and list windows scans the whole level, so between
+     * player turns leave those flags pending; process_player() flushes them
+     * before the player acts. */
+    if (defer_map_windows)
+        mask = ~(PW_OVERHEAD | PW_DUNGEON | PW_MONSTER_LIST | PW_OBJECT_LIST);
+    else
+        mask = 0xFFFFFFFFL;
+    if (!(p_ptr->window & mask)) return;
+
 
     /* Display inventory */
     if (p_ptr->window & (PW_INVEN))
@@ -5850,14 +5859,14 @@ void window_stuff(void)
     }
 
     /* Display overhead view */
-    if (p_ptr->window & (PW_OVERHEAD))
+    if (p_ptr->window & mask & (PW_OVERHEAD))
     {
         p_ptr->window &= ~(PW_OVERHEAD);
         fix_overhead();
     }
 
     /* Display overhead view */
-    if (p_ptr->window & (PW_DUNGEON))
+    if (p_ptr->window & mask & (PW_DUNGEON))
     {
         p_ptr->window &= ~(PW_DUNGEON);
         fix_dungeon();
@@ -5870,13 +5879,13 @@ void window_stuff(void)
         fix_monster();
     }
 
-    if (p_ptr->window & PW_OBJECT_LIST)
+    if (p_ptr->window & mask & PW_OBJECT_LIST)
     {
         p_ptr->window &= ~(PW_OBJECT_LIST);
         fix_object_list();
     }
 
-    if (p_ptr->window & PW_MONSTER_LIST)
+    if (p_ptr->window & mask & PW_MONSTER_LIST)
     {
         p_ptr->window &= ~(PW_MONSTER_LIST);
         fix_monster_list();

@@ -1261,11 +1261,11 @@ shop_ptr shop_load(savefile_ptr file)
 
     tmp = savefile_read_s16b(file);
     shop->type = _get_type(tmp);
-    assert(shop->type);
+    if (!shop->type) shop->type = &_types[0]; /* corrupt or outdated savefile */
 
     tmp = savefile_read_s16b(file);
     shop->owner = _get_owner(shop->type, tmp);
-    assert(shop->owner);
+    if (!shop->owner) shop->owner = &shop->type->owners[0];
     shop->owner->active = TRUE;
 
     shop->inv = inv_alloc(shop->type->name, INV_SHOP, 0);

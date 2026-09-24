@@ -4069,6 +4069,15 @@ void delayed_visual_update(void)
 
 
 /*
+ * Grids stamped by the last update_flow(), so the next call can clear just
+ * those instead of the whole level. If the list fills up, fall back to a
+ * full clear.
+ */
+static u16b _flow_grids[MAX_HGT * MAX_WID];
+static int  _flow_grid_ct = 0;
+static bool _flow_grid_overflow = TRUE;
+
+/*
  * Hack -- forget the "flow" information
  */
 void forget_flow(void)
@@ -4087,6 +4096,8 @@ void forget_flow(void)
         }
     }
     current_flow_depth = 0;
+    _flow_grid_ct = 0;
+    _flow_grid_overflow = FALSE;
 }
 
 
@@ -4135,14 +4146,29 @@ void update_flow(void)
     }
 
     /* Erase all of the current flow information */
-    for (y = 0; y < cur_hgt; y++)
+    if (_flow_grid_overflow)
     {
-        for (x = 0; x < cur_wid; x++)
+        for (y = 0; y < cur_hgt; y++)
         {
-            cave[y][x].cost = 0;
-            cave[y][x].dist = 0;
+            for (x = 0; x < cur_wid; x++)
+            {
+                cave[y][x].cost = 0;
+                cave[y][x].dist = 0;
+            }
         }
     }
+    else
+    {
+        int i;
+        for (i = 0; i < _flow_grid_ct; i++)
+        {
+            cave_type *c_ptr = &cave[GRID_Y(_flow_grids[i])][GRID_X(_flow_grids[i])];
+            c_ptr->cost = 0;
+            c_ptr->dist = 0;
+        }
+    }
+    _flow_grid_ct = 0;
+    _flow_grid_overflow = FALSE;
 
     /* Save player position */
     flow_y = py;
@@ -4189,6 +4215,15 @@ void update_flow(void)
 
             /* Ignore "walls" and "rubble" */
             if (!cave_have_flag_grid(c_ptr, FF_MOVE) && !is_closed_door(c_ptr->feat)) continue;
+
+            /* Remember newly stamped grids for the next erase */
+            if (c_ptr->cost == 0 && c_ptr->dist == 0)
+            {
+                if (_flow_grid_ct < MAX_HGT * MAX_WID)
+                    _flow_grids[_flow_grid_ct++] = GRID(y, x);
+                else
+                    _flow_grid_overflow = TRUE;
+            }
 
             /* Save the flow cost */
             if (c_ptr->cost == 0 || c_ptr->cost > m) c_ptr->cost = m;

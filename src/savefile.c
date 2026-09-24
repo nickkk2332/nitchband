@@ -221,6 +221,7 @@ void savefile_read_cptr(savefile_ptr file, char *buf, int max)
         byte c = savefile_read_byte(file);
         if (i < max) buf[i] = c;
         if (!c) break;
+        if (feof(file->file) || ferror(file->file)) break; /* truncated save */
     }
     buf[max-1] = '\0';
 }
@@ -232,6 +233,7 @@ string_ptr savefile_read_string(savefile_ptr file)
     {
         byte c = savefile_read_byte(file);
         if (!c) break;
+        if (feof(file->file) || ferror(file->file)) break; /* truncated save */
         string_append_c(s, c);
     }
     return s;

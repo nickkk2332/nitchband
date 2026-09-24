@@ -764,7 +764,7 @@ cptr process_pref_file_expr(char **sp, char *fp)
     char b2 = ']';
 
     char f = ' ';
-    static char tmp[10];
+    static char tmp[64];
 
     /* Initial */
     s = (*sp);
@@ -939,12 +939,12 @@ cptr process_pref_file_expr(char **sp, char *fp)
                     v = get_race()->name;
                 else
                     v = get_true_race()->name;
-                while (1)
+                if (strchr(v, ' '))
                 {
-                    unsigned int paikka = strpos(" ", v);
-                    if (!paikka) break;
-                    sprintf(tmp, v);
-                    tmp[paikka - 1] = '-';
+                    char *t;
+                    my_strcpy(tmp, v, sizeof(tmp));
+                    for (t = tmp; *t; t++)
+                        if (*t == ' ') *t = '-';
                     v = tmp;
                 }
             }
@@ -1016,7 +1016,7 @@ cptr process_pref_file_expr(char **sp, char *fp)
             /* Money */
             else if (streq(b+1, "MONEY"))
             {
-                sprintf(tmp, "%09d", p_ptr->au);
+                strnfmt(tmp, sizeof(tmp), "%09d", p_ptr->au);
                 v = tmp;
             }
             /* Money */

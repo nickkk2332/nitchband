@@ -869,9 +869,9 @@ static void _calc_weapon_bonuses(object_type *o_ptr, weapon_info_t *info_ptr)
     if (r_ptr->body.blows_calc.max)
         info_ptr->blows_calc.max = r_ptr->body.blows_calc.max;
     if (r_ptr->body.blows_calc.wgt)
-        info_ptr->blows_calc.max = r_ptr->body.blows_calc.wgt;
+        info_ptr->blows_calc.wgt = r_ptr->body.blows_calc.wgt;
     if (r_ptr->body.blows_calc.mult)
-        info_ptr->blows_calc.max = r_ptr->body.blows_calc.mult;
+        info_ptr->blows_calc.mult = r_ptr->body.blows_calc.mult;
 }
 
 static void _calc_shooter_bonuses(object_type *o_ptr, shooter_info_t *info_ptr)

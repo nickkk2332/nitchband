@@ -806,6 +806,11 @@ void inv_load(inv_ptr inv, savefile_ptr file)
         slot = savefile_read_s32b(file);
         obj_load(obj, file);
 
+        if (slot < 1 || (inv->max && slot > inv->max) || slot > 10000) /* corrupt savefile */
+        {
+            obj_free(obj);
+            continue;
+        }
         if (slot >= vec_length(inv->objects))
             _grow(inv, slot);
         vec_set(inv->objects, slot, obj);

@@ -25,8 +25,8 @@ char *_timestamp(void)
 }
 char *_version(void)
 {
-    char buf[32];
-    sprintf(buf, "%d.%d.%s%s", VER_MAJOR, VER_MINOR, VER_PATCH, version_modifier());
+    char buf[80];
+    strnfmt(buf, sizeof(buf), "%d.%d.%s%s", VER_MAJOR, VER_MINOR, VER_PATCH, version_modifier());
     return _str_copy(buf);
 }
 static char *_status(void)
@@ -121,7 +121,7 @@ static char *_parse_string(vec_ptr v, int i)
         string_ptr s = vec_get(v, i);
         return _str_copy(string_buffer(s));
     }
-    return NULL;
+    return _str_copy(""); /* missing field: never leave NULL for strcmp/printf */
 }
 #define _FIELD_COUNT 22
 static score_ptr score_read(FILE *fp)
@@ -284,7 +284,12 @@ vec_ptr scores_load(score_p filter)
         for (;;)
         {
             score_ptr score = score_read(fp);
-            if (!score) break;
+            if (!score)
+            {
+                /* Skip blank lines; stop only at end of file */
+                if (feof(fp) || ferror(fp)) break;
+                continue;
+            }
             if (filter && !filter(score))
             {
                 score_free(score);
@@ -425,7 +430,7 @@ void _purge_docs(vec_ptr scores)
  ************************************************************************/
 static void _display(doc_ptr doc, vec_ptr scores, int top, int page_size)
 {
-    int i, j;
+    int i, j = top;
     doc_clear(doc);
     doc_insert(doc, "<style:table>");
     doc_insert(doc, "<tab:32><color:R>High Score Listing</color>\n");

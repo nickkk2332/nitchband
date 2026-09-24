@@ -208,20 +208,21 @@ static void rd_lore_aux(savefile_ptr file, mon_race_ptr race)
     ct_blows = savefile_read_byte(file);
     for (i = 0; i < ct_blows; i++)
     {
-        mon_blow_ptr blow = &race->blows[i];
-        blow->lore = savefile_read_s16b(file);
+        s16b lore = savefile_read_s16b(file);
+        if (i < MAX_MON_BLOWS) race->blows[i].lore = lore;
         ct_effects = savefile_read_byte(file);
         for (j = 0; j < ct_effects; j++)
         {
-            mon_effect_ptr effect = &blow->effects[j];
-            effect->lore = savefile_read_s16b(file);
+            lore = savefile_read_s16b(file);
+            if (i < MAX_MON_BLOWS && j < MAX_MON_BLOW_EFFECTS)
+                race->blows[i].effects[j].lore = lore;
         }
     }
     ct_auras = savefile_read_byte(file);
     for (i = 0; i < ct_auras; i++)
     {
-        mon_effect_ptr aura = &race->auras[i];
-        aura->lore = savefile_read_s16b(file);
+        s16b lore = savefile_read_s16b(file);
+        if (i < MAX_MON_AURAS) race->auras[i].lore = lore;
     }
 
     if (race->r_flagsr & (RFR_PACT_MONSTER)) pact = TRUE;
@@ -539,7 +540,9 @@ static void rd_extra(savefile_ptr file)
         max = savefile_read_byte(file);
         for (i = 0; i < max; i++)
         {
-            max_dlv[i] = savefile_read_s16b(file);
+            s16b lvl = savefile_read_s16b(file);
+            if (i >= max_d_idx) continue; /* dungeon no longer in d_info */
+            max_dlv[i] = lvl;
             if (max_dlv[i] > d_info[i].maxdepth) max_dlv[i] = d_info[i].maxdepth;
         }
 
@@ -552,7 +555,10 @@ static void rd_extra(savefile_ptr file)
         }
 
         for (i = 0; i < max; i++)
-            dungeon_flags[i] = savefile_read_u32b(file);
+        {
+            u32b flags = savefile_read_u32b(file);
+            if (i < max_d_idx) dungeon_flags[i] = flags;
+        }
 
         if (!savefile_is_older_than(file, 7, 1, 2, 6)) load_mystery(file);
     }
@@ -898,6 +904,8 @@ static errr rd_saved_floor(savefile_ptr file, saved_floor_type *sf_ptr)
     cur_wid = savefile_read_s16b(file);
     p_ptr->feeling = savefile_read_byte(file);
 
+    if (cur_hgt <= 0 || cur_hgt > MAX_HGT || cur_wid <= 0 || cur_wid > MAX_WID) return 171;
+
     limit = savefile_read_u16b(file);
     C_MAKE(template, limit, cave_template_type);
 
@@ -930,6 +938,12 @@ static errr rd_saved_floor(savefile_ptr file, saved_floor_type *sf_ptr)
             tmp8u = savefile_read_byte(file);
             id += tmp8u;
         } while (tmp8u == MAX_UCHAR);
+
+        if (id >= limit)
+        {
+            C_FREE(template, limit, cave_template_type);
+            return 171;
+        }
 
         /* Apply the RLE info */
         for (i = count; i > 0; i--)
@@ -993,6 +1007,8 @@ static errr rd_saved_floor(savefile_ptr file, saved_floor_type *sf_ptr)
         if (i != m_idx) return 162;
         m_ptr = &m_list[m_idx];
         rd_monster(file, m_ptr);
+        if (m_ptr->r_idx <= 0 || m_ptr->r_idx >= max_r_idx) return 162;
+        if (m_ptr->fy >= MAX_HGT || m_ptr->fx >= MAX_WID) return 162;
         c_ptr = &cave[m_ptr->fy][m_ptr->fx];
         c_ptr->m_idx = m_idx;
         inc_cur_num(m_ptr, 1);
@@ -1094,6 +1110,11 @@ static errr rd_dungeon(savefile_ptr file)
     set_dungeon_type(savefile_read_byte(file));
 
     num = savefile_read_byte(file);
+    if (num > MAX_SAVED_FLOORS)
+    {
+        note(format("Too many (%d) saved floors!", num));
+        return 171;
+    }
 
     /*** No saved floor (On the surface etc.) ***/
     if (!num)
@@ -1308,7 +1329,7 @@ static errr rd_savefile_new_aux(savefile_ptr file)
         int e_idx = savefile_read_s16b(file);
         ego_ptr ego;
         if (e_idx < 0) break;
-        if (e_idx > max_e_idx)
+        if (e_idx >= max_e_idx)
         {
             note(format("Ego (%d) out of range!", e_idx));
             return (22);
@@ -1318,14 +1339,14 @@ static errr rd_savefile_new_aux(savefile_ptr file)
         {
             byte b = savefile_read_byte(file);
             if (b == 0xFF) break;
-            assert(/*0 <= b &&*/ b < OF_ARRAY_SIZE);
+            if (b >= OF_ARRAY_SIZE) return (22);
             ego->known_flags[b] = savefile_read_u32b(file);
         }
         for (;;)
         {
             byte b = savefile_read_byte(file);
             if (b == 0xFF) break;
-            assert(/*0 <= b &&*/ b < OF_ARRAY_SIZE);
+            if (b >= OF_ARRAY_SIZE) return (22);
             ego->xtra_flags[b] = savefile_read_u32b(file);
         }
         ego->counts.generated = savefile_read_s16b(file);
@@ -1339,7 +1360,7 @@ static errr rd_savefile_new_aux(savefile_ptr file)
         int a_idx = savefile_read_s16b(file);
         art_ptr art;
         if (a_idx < 0) break;
-        if (a_idx > max_a_idx)
+        if (a_idx >= max_a_idx)
         {
             note(format("Art (%d) out of range!", a_idx));
             return (22);
@@ -1349,7 +1370,7 @@ static errr rd_savefile_new_aux(savefile_ptr file)
         {
             byte b = savefile_read_byte(file);
             if (b == 0xFF) break;
-            assert(/*0 <= b &&*/ b < OF_ARRAY_SIZE);
+            if (b >= OF_ARRAY_SIZE) return (22);
             art->known_flags[b] = savefile_read_u32b(file);
         }
     }
@@ -1582,5 +1603,5 @@ bool load_floor(saved_floor_type *sf_ptr, u32b mode)
         msg_print("Software bug in load_floor: All is *not* OK!");
     }
 
-    return TRUE;
+    return ok;
 }
