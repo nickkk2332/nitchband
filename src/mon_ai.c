@@ -194,7 +194,16 @@ static int _retreat_score(mon_ptr mon)
     if (r_ptr->flags1 & RF1_NEVER_MOVE) return 0;
     if (r_ptr->flags3 & RF3_NO_FEAR) return 0;
     if (MON_MONFEAR(mon) || MON_CONFUSED(mon)) return 0;  /* the old fear code handles that */
-    if (mon->intent == MAI_I_REGROUP && hp_pct < 70) return 40;
+    if (mon->intent == MAI_I_REGROUP)
+    {
+        /* Still being chased after 10 turns of running: turn and fight */
+        if (!mon->intent_timer)
+        {
+            mon->intent = MAI_I_NONE;
+            return 0;
+        }
+        if (hp_pct < 70) return 40;
+    }
     if (mon->shouted) return 0;  /* already broke off once: fights to the end now */
     if (hp_pct >= 50 || morale >= 50) return 0;
     return (50 - morale) + (50 - hp_pct);
@@ -726,7 +735,13 @@ bool mon_ai_retreat_moves(mon_ptr mon, int *mm)
     monster_race *r_ptr = &r_info[mon->r_idx];
     int           d, best_dir = 0, best_score = -1000;
 
-    if (!mon->shouted) _shout_for_help(mon);
+    if (!mon->shouted)
+    {
+        _shout_for_help(mon);
+        mon->intent_timer = 10;  /* turns allowed to break contact */
+    }
+    else if (mon->intent_timer)
+        mon->intent_timer--;
     if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.retreats++;
 
     for (d = 0; d < 8; d++)
