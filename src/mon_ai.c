@@ -7,6 +7,13 @@
 
 mon_ai_stats_t mon_ai_stats = {0};
 
+bool mon_ai_tracked(mon_ptr mon)
+{
+    if (!mon_ai_stats.m_idx || !mon) return FALSE;
+    if (mon->id == mon_ai_stats.m_idx) return TRUE;
+    return mon_ai_stats.pack_idx && mon->pack_idx == mon_ai_stats.pack_idx;
+}
+
 cptr mon_ai_kind_name(int kind)
 {
     switch (kind)
@@ -431,7 +438,7 @@ void mon_ai_perceive(mon_ptr mon)
     int          c;
 
     if (!is_hostile(mon)) return;
-    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.states[mon->ai_state]++;
+    if (mon_ai_tracked(mon)) mon_ai_stats.states[mon->ai_state]++;
 
     c = _contact(mon);
     mon->ai_contact = c;
@@ -651,7 +658,7 @@ static void _interrupt(mon_ptr mon, cptr how)
 {
     if (mon->intent != MAI_I_CHARGE) return;
     mon->intent = MAI_I_NONE;
-    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.interrupts++;
+    if (mon_ai_tracked(mon)) mon_ai_stats.interrupts++;
     if (mon_show_msg(mon))
     {
         char m_name[MAX_NLEN];
@@ -701,7 +708,7 @@ void mon_ai_start_charge(mon_ptr mon, int type, int effect)
     mon->intent_timer = 3;  /* released next turn; held up to 2 more if it has no shot */
     mon->intent_type = type + 1;
     mon->intent_effect = effect;
-    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.charges++;
+    if (mon_ai_tracked(mon)) mon_ai_stats.charges++;
 }
 
 /* Wake sleeping monsters nearby and tell them where the player is */
@@ -721,7 +728,7 @@ static void _shout_for_help(mon_ptr mon)
         mon_ai_alert(other);
     }
     mon->shouted = TRUE;
-    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.shouts++;
+    if (mon_ai_tracked(mon)) mon_ai_stats.shouts++;
     if (woke && mon_show_msg(mon))
     {
         char m_name[MAX_NLEN];
@@ -742,7 +749,7 @@ bool mon_ai_retreat_moves(mon_ptr mon, int *mm)
     }
     else if (mon->intent_timer)
         mon->intent_timer--;
-    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.retreats++;
+    if (mon_ai_tracked(mon)) mon_ai_stats.retreats++;
 
     for (d = 0; d < 8; d++)
     {
@@ -776,7 +783,7 @@ bool mon_ai_intent_turn(mon_ptr mon)
         }
         if (mon_spell_cast_charged(mon, mon->intent_type - 1, mon->intent_effect))
         {
-            if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.releases++;
+            if (mon_ai_tracked(mon)) mon_ai_stats.releases++;
             mon->intent = MAI_I_NONE;
             return TRUE;
         }

@@ -1821,6 +1821,64 @@ static void _wiz_player_chase_step(int m_idx)
         move_player_effect(py + ddy_ddd[best_d], px + ddx_ddd[best_d], MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
 }
 
+/* Group mode: the nearest living member of the tagged group, or 0 */
+static int _wiz_kite_focus(u16b tag, int *alive, int *adjacent, bool *flanked)
+{
+    int i, best = 0, best_d = 999;
+    int ady[8], adx[8], adj = 0, a, b;
+
+    *alive = 0;
+    for (i = 1; i < m_max; i++)
+    {
+        monster_type *m_ptr = &m_list[i];
+        if (!m_ptr->r_idx || m_ptr->nickname != tag) continue;
+        (*alive)++;
+        if (m_ptr->cdis <= 1 && adj < 8)
+        {
+            ady[adj] = m_ptr->fy - py;
+            adx[adj++] = m_ptr->fx - px;
+        }
+        if (m_ptr->cdis < best_d)
+        {
+            best_d = m_ptr->cdis;
+            best = i;
+        }
+    }
+    *adjacent = adj;
+    /* Flanked: two attackers on opposite sides (more than 90 degrees apart) */
+    *flanked = FALSE;
+    for (a = 0; a < adj; a++)
+        for (b = a + 1; b < adj; b++)
+            if (ady[a] * ady[b] + adx[a] * adx[b] < 0) *flanked = TRUE;
+    return best;
+}
+
+/* Group mode: place the race with its friends/escorts 5-8 squares away */
+static int _wiz_kite_place_group(int r_idx, u16b tag)
+{
+    int tries, i;
+    for (tries = 0; tries < 2000; tries++)
+    {
+        int y = py + randint0(17) - 8, x = px + randint0(17) - 8;
+        int d = distance(py, px, y, x), m_idx;
+        if (d < 5 || d > 8) continue;
+        if (!in_bounds(y, x) || !cave_empty_bold(y, x)) continue;
+        if (!place_monster_aux(0, y, x, r_idx, PM_NO_KAGE | PM_NO_PET | PM_ALLOW_GROUP)) continue;
+        m_idx = cave[y][x].m_idx;
+        if (!m_idx) continue;
+        for (i = 1; i < m_max; i++)
+        {
+            monster_type *m_ptr = &m_list[i];
+            if (!m_ptr->r_idx || i == p_ptr->riding) continue;
+            (void)set_monster_csleep(i, 0);
+            m_ptr->mflag &= ~MFLAG_NICE;
+            m_ptr->nickname = tag;
+        }
+        return m_idx;
+    }
+    return 0;
+}
+
 static int _wiz_kite_place(int r_idx)
 {
     int d, start = randint0(8);
@@ -1845,7 +1903,9 @@ static void _wiz_ai_kite(void)
     int     r_idx, trials, turns, i, t, k;
     int     player_turns = 0, player_adjacent = 0, fails = 0, player_energy;
     int     test_speed = p_ptr->pspeed;
-    int     found = 0, kills = 0;
+    int     found = 0, kills = 0, group_size = 0;
+    s32b    adjacent_sum = 0, flanked_turns = 0;
+    bool    group;
     s32b    find_turns = 0, kill_turns = 0;
     s32b    exp0 = p_ptr->exp, max_exp0 = p_ptr->max_exp;
     bool    chase, hide, fight;
@@ -1884,6 +1944,9 @@ static void _wiz_ai_kite(void)
     hide = (buf[0] == 't' || buf[0] == 'T');
     fight = (buf[0] == 'f' || buf[0] == 'F');
     chase = !hide && (buf[0] != 's' && buf[0] != 'S');
+    strcpy(buf, "n");
+    if (!msg_input("Place its whole group, 5-8 squares away? (y/n) ", buf, 2)) return;
+    group = (buf[0] == 'y' || buf[0] == 'Y');
     strcpy(buf, "0");
     if (!msg_input("Random seed (0 = don't fix)? ", buf, 12)) return;
     seed = strtoul(buf, NULL, 10);
@@ -1921,14 +1984,22 @@ static void _wiz_ai_kite(void)
         p_ptr->update |= PU_BONUS | PU_HP | PU_MANA;
         handle_stuff();
         if (i == 0) test_speed = p_ptr->pspeed;
-        m_idx = _wiz_kite_place(r_idx);
+        m_idx = group ? _wiz_kite_place_group(r_idx, kite_tag) : _wiz_kite_place(r_idx);
         if (!m_idx)
         {
             fails++;
             continue;
         }
         mon_ai_stats.m_idx = m_idx;
+        mon_ai_stats.pack_idx = group ? m_list[m_idx].pack_idx : 0;
         m_list[m_idx].nickname = kite_tag; /* detect the slot being reused after a kill */
+        if (group)
+        {
+            int alive, adj;
+            bool fl;
+            (void)_wiz_kite_focus(kite_tag, &alive, &adj, &fl);
+            group_size += alive;
+        }
         player_energy = 0;
 
         /* Hide test: break contact with a medium-range teleport, then wait.
@@ -1945,6 +2016,15 @@ static void _wiz_ai_kite(void)
             game_turn++;
             process_monsters();
             p_ptr->chp = p_ptr->mhp;
+            if (group)
+            {
+                /* Follow the nearest living member; the trial ends when all are dead */
+                int alive, adj;
+                bool fl;
+                int focus = _wiz_kite_focus(kite_tag, &alive, &adj, &fl);
+                if (focus) m_idx = focus;
+                else m_list[m_idx].nickname = 0;  /* force the end-of-group check below */
+            }
             if (!m_list[m_idx].r_idx || m_list[m_idx].nickname != kite_tag)
             {
                 if (fight)
@@ -1968,6 +2048,14 @@ static void _wiz_ai_kite(void)
             {
                 player_energy += 100;
                 player_turns++;
+                if (group)
+                {
+                    int alive, adj;
+                    bool fl;
+                    (void)_wiz_kite_focus(kite_tag, &alive, &adj, &fl);
+                    adjacent_sum += adj;
+                    if (fl) flanked_turns++;
+                }
                 if (m_list[m_idx].cdis <= 1)
                 {
                     player_adjacent++;  /* a melee chance for the player */
@@ -1979,6 +2067,7 @@ static void _wiz_ai_kite(void)
             }
         }
         mon_ai_stats.m_idx = 0;
+        mon_ai_stats.pack_idx = 0;
         if (p_ptr->leaving || p_ptr->is_dead) break;
     }
 
@@ -2016,6 +2105,13 @@ static void _wiz_ai_kite(void)
     doc_printf(doc, "%d trials x %d game turns", trials - fails, turns);
     if (fails) doc_printf(doc, " (%d could not be set up)", fails);
     doc_newline(doc);
+    if (group && trials - fails > 0)
+    {
+        doc_printf(doc, "Group of <color:R>%d.%d</color> on average; per your turn <color:R>%d.%02d</color> of them next to you, flanked on <color:R>%d%%</color> of your turns\n",
+            group_size / (trials - fails), (group_size * 10 / (trials - fails)) % 10,
+            player_turns ? (int)(adjacent_sum / player_turns) : 0, player_turns ? (int)(adjacent_sum * 100 / player_turns % 100) : 0,
+            player_turns ? (int)(flanked_turns * 100 / player_turns) : 0);
+    }
     if (fight && trials - fails > 0)
     {
         doc_printf(doc, "You killed it in <color:R>%d%%</color> of trials", kills * 100 / (trials - fails));

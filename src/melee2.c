@@ -2325,7 +2325,7 @@ static void process_monster(int m_idx)
 
     bool            see_m = mon_show_msg(m_ptr);
 
-    if (mon_ai_stats.m_idx == m_idx)
+    if (mon_ai_tracked(&m_list[m_idx]))
     {
         mon_ai_stats.turns++;
         if (m_ptr->cdis <= 1) mon_ai_stats.adjacent++;
@@ -2869,7 +2869,7 @@ static void process_monster(int m_idx)
         /* Weigh this turn's options (see mon_ai.c) and pick one */
         mon_ai_decide(m_ptr, blocked, &decision);
         ai_kind = mon_ai_choose(&decision);
-        if (mon_ai_stats.m_idx == m_idx) mon_ai_stats.kinds[ai_kind]++;
+        if (mon_ai_tracked(&m_list[m_idx])) mon_ai_stats.kinds[ai_kind]++;
         if (ai_kind == MAI_CAST)
         {
             bool counterattack = FALSE;
@@ -2921,7 +2921,7 @@ static void process_monster(int m_idx)
          * so no random roll unless something like a retreat is on offer) */
         mon_ai_decide(m_ptr, TRUE, &decision);
         ai_kind = mon_ai_choose(&decision);
-        if (mon_ai_stats.m_idx == m_idx) mon_ai_stats.kinds[ai_kind]++;
+        if (mon_ai_tracked(&m_list[m_idx])) mon_ai_stats.kinds[ai_kind]++;
     }
 
     /* XXX Regain mana (EXPERIMENTAL) */
@@ -3404,7 +3404,7 @@ static void process_monster(int m_idx)
                 if (!p_ptr->riding || one_in_(2))
                 {
                     /* Do the attack */
-                    if (mon_ai_stats.m_idx == m_idx) mon_ai_stats.melee++;
+                    if (mon_ai_tracked(&m_list[m_idx])) mon_ai_stats.melee++;
                     (void)make_attack_normal(m_idx);
                     if ((r_ptr->flags2 & RF2_INVISIBLE) && p_ptr->see_inv && !m_ptr->ml)
                         update_mon(m_idx, FALSE);

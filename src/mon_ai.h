@@ -145,6 +145,7 @@ extern void mon_ai_player_noise(int loudness);
  * names it (the ^A K wizard harness). */
 typedef struct {
     int m_idx;              /* monster being measured; 0 = off */
+    int pack_idx;           /* ... and its whole pack, if set */
     int turns;              /* turns the monster took */
     int adjacent;           /* ... that began next to the player */
     int kinds[MAI_KIND_MAX];/* option picked (spellcasters only) */
@@ -161,5 +162,6 @@ typedef struct {
     int shouts;             /* called for help */
 } mon_ai_stats_t;
 extern mon_ai_stats_t mon_ai_stats;
+extern bool mon_ai_tracked(mon_ptr mon);
 
 #endif
