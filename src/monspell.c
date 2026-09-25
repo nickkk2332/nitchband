@@ -3577,8 +3577,9 @@ static void _spell_msg(void)
 /*************************************************************************
  * AI
  ************************************************************************/
-static void _ai_init(mon_spells_ptr spells)
+static void _ai_init(mon_race_ptr race)
 {
+    mon_spells_ptr spells = race->spells;
     int i, j;
     for (i = 0; i < MST_COUNT; i++)
     {
@@ -3590,7 +3591,10 @@ static void _ai_init(mon_spells_ptr spells)
         for (j = 0; j < group->count; j++)
         {
             mon_spell_ptr spell = &group->spells[j];
-            spell->prob = spell->weight ? spell->weight : mp->prob;
+            if (spell->weight)
+                spell->prob = spell->weight;
+            else  /* archetypes favour some spell types (see mon_ai.c) */
+                spell->prob = MIN(250, mp->prob * mon_ai_spell_type_pct(race, i) / 100);
         }
     }
 }
@@ -4409,7 +4413,7 @@ static void _ai_remember(mon_spell_cast_ptr cast)
 static bool _default_ai(mon_spell_cast_ptr cast)
 {
     if (!cast->race->spells) return FALSE;
-    _ai_init(cast->race->spells);
+    _ai_init(cast->race);
     _ai_think(cast);
     _ai_heal_ally(cast);
     _ai_no_repeat(cast);
@@ -4737,7 +4741,7 @@ static bool _default_ai_mon(mon_spell_cast_ptr cast)
 {
     if (!cast->race->spells) return FALSE;
     if (!_choose_target(cast)) return FALSE;
-    _ai_init(cast->race->spells);
+    _ai_init(cast->race);
     _ai_think_mon(cast);
     _ai_heal_ally(cast);
     _ai_no_repeat(cast);
@@ -6133,6 +6137,7 @@ void mon_ai_wizard(mon_ptr mon, doc_ptr doc)
         if (mon->ai_state == MAI_S_SEARCHING)
             doc_printf(doc, "Searching for %d more turns\n", mon->ai_timer);
     }
+    mon_ai_describe_tactics(mon, doc);
     if (pack_info_ptr(mon->id))
         doc_printf(doc, "Squad role: <color:B>%s</color>, plan: %s\n", mon_ai_role_name(mon_ai_role(mon)), mon_ai_plan_name(mon_ai_squad_plan(mon)));
     doc_printf(doc, "Morale %d%%, intent: %s", mon_ai_morale(mon), mon_ai_intent_name(mon->intent));

@@ -7,6 +7,9 @@
 
 mon_ai_stats_t mon_ai_stats = {0};
 
+static int _path_step(mon_ptr mon, int ty, int tx);
+static int _greedy_step(mon_ptr mon, int ty, int tx);
+
 bool mon_ai_tracked(mon_ptr mon)
 {
     if (!mon_ai_stats.m_idx || !mon) return FALSE;
@@ -24,6 +27,8 @@ cptr mon_ai_kind_name(int kind)
     case MAI_RETREAT: return "Retreat to regroup";
     case MAI_FLANK: return "Flank the player";
     case MAI_WAIT: return "Wait for an opening";
+    case MAI_LURK: return "Lie in wait";
+    case MAI_GUARD: return "Keep to its post";
     case MAI_PHYSICAL: return "Move or melee";
     }
     return "?";
@@ -47,6 +52,16 @@ cptr mon_ai_archetype_name(int arch)
     return pretty[arch];
 }
 
+cptr mon_ai_archetype_article(int arch)
+{
+    static cptr names[MAI_A_MAX] = {
+        "?", "a Brute", "a Skirmisher", "Artillery", "Support", "an Ambusher",
+        "a Guardian", "a Trickster", "a Berserker",
+    };
+    if (arch <= 0 || arch >= MAI_A_MAX) return "?";
+    return names[arch];
+}
+
 int mon_ai_archetype(monster_race *r_ptr)
 {
     if (r_ptr->ai_arch) return r_ptr->ai_arch;
@@ -68,6 +83,75 @@ bool mon_ai_race_kites(monster_race *r_ptr)
         return mon_race_weak_melee(r_ptr);
     }
     return FALSE;
+}
+
+int mon_ai_spell_type_pct(monster_race *r_ptr, int type)
+{
+    if (!r_ptr->ai_arch) return 100;  /* inferred archetypes keep the classic weights */
+    switch (r_ptr->ai_arch)
+    {
+    case MAI_A_TRICKSTER:
+        if (type == MST_TACTIC || type == MST_ESCAPE || type == MST_ANNOY || type == MST_BIFF) return 200;
+        break;
+    case MAI_A_SUPPORT:
+        if (type == MST_HEAL || type == MST_BUFF) return 200;
+        break;
+    case MAI_A_BERSERKER:
+        if (type == MST_ESCAPE) return 0;
+        break;
+    }
+    return 100;
+}
+
+/* Personality bits from a hash of things fixed at birth, so no random
+ * numbers are drawn and a reloaded monster keeps its character */
+static int _pers(mon_ptr mon)
+{
+    if (!mon->ai_pers)
+    {
+        u32b h = (u32b)mon->id * 2654435761u ^ (u32b)mon->r_idx * 40503u ^ (u32b)mon->maxhp * 97u;
+        h ^= h >> 13;
+        h *= 0x5bd1e995u;
+        h ^= h >> 15;
+        mon->ai_pers = 0x80 | (h & 0x0f);
+    }
+    return mon->ai_pers;
+}
+
+static int _pers_axis(mon_ptr mon, int shift)
+{
+    int v;
+    if (r_info[mon->r_idx].flags1 & RF1_UNIQUE) return 0;
+    v = (_pers(mon) >> shift) & 3;
+    if (v == 0) return -1;  /* 1 in 4 */
+    if (v == 3) return 1;   /* 1 in 4 */
+    return 0;
+}
+int mon_ai_courage(mon_ptr mon) { return _pers_axis(mon, 0); }
+int mon_ai_temper(mon_ptr mon) { return _pers_axis(mon, 2); }
+
+void mon_ai_describe_tactics(mon_ptr mon, doc_ptr doc)
+{
+    static cptr courage[3] = { "timid", "steady", "bold" };
+    static cptr temper[3] = { "careful", "even-tempered", "aggressive" };
+    monster_race *r_ptr = &r_info[mon->r_idx];
+
+    doc_printf(doc, "Archetype: <color:B>%s</color>%s%s%s, %s and %s\n",
+        mon_ai_archetype_name(mon_ai_archetype(r_ptr)),
+        r_ptr->ai_arch ? "" : " (inferred)",
+        (r_ptr->ai_traits & MAI_T_COWARDLY) ? ", cowardly" : "",
+        (r_ptr->ai_traits & MAI_T_BRAVE) ? ", brave" : "",
+        courage[mon_ai_courage(mon) + 1], temper[mon_ai_temper(mon) + 1]);
+    if (mon_ai_archetype(r_ptr) == MAI_A_GUARDIAN && (mon->home_y || mon->home_x))
+        doc_printf(doc, "Guards (%d,%d), %d squares away\n", mon->home_x, mon->home_y,
+            distance(mon->fy, mon->fx, mon->home_y, mon->home_x));
+    if (mon->lurk)
+    {
+        if (mon_ai_archetype(r_ptr) == MAI_A_GUARDIAN)
+            doc_printf(doc, "Provoked: chases you for %d more turns\n", mon->lurk);
+        else
+            doc_printf(doc, "Has lain in wait for %d turns\n", mon->lurk);
+    }
 }
 
 errr mon_ai_parse_tactics(monster_race *r_ptr, char *buf)
@@ -162,6 +246,13 @@ static void _score_cast(mon_ptr mon, mon_ai_option_ptr opt)
     if (freq > 100) _term(opt, "Capped", 100);
     freq = opt->score;
 
+    /* Berserkers would rather hit you */
+    if (mon->cdis <= 1 && mon_ai_archetype(&r_info[mon->r_idx]) == MAI_A_BERSERKER)
+    {
+        _term(opt, "Berserk in melee", freq / 2);
+        freq = opt->score;
+    }
+
     /* XXX Adapt spell frequency down if monster is stunned (EXPERIMENTAL)
      * Sure, stunning effects fail rates, but not on innate spells (breaths).
      * In fact, distance stunning gives no benefit against big breathers ...
@@ -201,7 +292,33 @@ static int _open_neighbours(monster_race *r_ptr, int y, int x)
     return ct;
 }
 
+static int _step_away_aux(mon_ptr mon, bool need_shot);
+
 int mon_ai_step_away_dir(mon_ptr mon)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+
+    if (!mon_ai_race_kites(r_ptr)) return 0;
+
+    /* A clearly faster player just follows and gets free hits: stepping back
+     * only helps a monster that can keep up. (It may still blink.) */
+    if (mon_ai_speed(mon) + 2 < p_ptr->pspeed) return 0;
+    return _step_away_aux(mon, TRUE);
+}
+
+/* Skirmisher that hit the player last turn: step back out of reach. Only
+ * worth it for a monster fast enough to come straight back in. */
+static int _skirmish_dir(mon_ptr mon)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+
+    if (!mon->struck) return 0;
+    if (mon_ai_archetype(r_ptr) != MAI_A_SKIRMISHER) return 0;
+    if (mon_ai_speed(mon) < p_ptr->pspeed + 5) return 0;
+    return _step_away_aux(mon, FALSE);
+}
+
+static int _step_away_aux(mon_ptr mon, bool need_shot)
 {
     monster_race *r_ptr = &r_info[mon->r_idx];
     int           d, best_dir = 0, best_score = 0;
@@ -211,11 +328,6 @@ int mon_ai_step_away_dir(mon_ptr mon)
     if (mon->id == p_ptr->riding) return 0;
     if (r_ptr->flags1 & RF1_NEVER_MOVE) return 0;
     if (MON_CONFUSED(mon) || MON_MONFEAR(mon) || MON_CSLEEP(mon)) return 0;
-    if (!mon_ai_race_kites(r_ptr)) return 0;
-
-    /* A clearly faster player just follows and gets free hits: stepping back
-     * only helps a monster that can keep up. (It may still blink.) */
-    if (mon_ai_speed(mon) + 2 < p_ptr->pspeed) return 0;
 
     for (d = 0; d < 8; d++)
     {
@@ -229,7 +341,7 @@ int mon_ai_step_away_dir(mon_ptr mon)
         if (!monster_can_enter(y, x, r_ptr, 0)) continue;
         if (is_glyph_grid(&cave[y][x]) || is_mon_trap_grid(&cave[y][x])) continue;
         if (distance(py, px, y, x) < 2) continue;         /* still in melee */
-        if (!projectable(y, x, py, px)) continue;         /* keep a line of fire */
+        if (need_shot && !projectable(y, x, py, px)) continue;  /* keep a line of fire */
 
         score = 10 * distance(py, px, y, x) + _open_neighbours(r_ptr, y, x);
         if (score > best_score)
@@ -257,18 +369,29 @@ static bool _hold_ok(mon_ptr mon)
     return TRUE;
 }
 
+/* Careful monsters keep their distance more, aggressive ones less */
+static void _temper_term(mon_ptr mon, mon_ai_option_ptr opt, int amt)
+{
+    int t = mon_ai_temper(mon);
+    if (t < 0) _term(opt, "Careful", opt->score + amt);
+    else if (t > 0) _term(opt, "Aggressive", MAX(1, opt->score - amt));
+}
+
 /* How much a shaken, hurt monster wants to break off (0 = not at all) */
 static int _retreat_score(mon_ptr mon)
 {
     monster_race *r_ptr = &r_info[mon->r_idx];
     int           morale = mon_ai_morale(mon);
     int           hp_pct = mon->hp * 100 / MAX(1, mon->maxhp);
+    int           limit = (r_ptr->ai_traits & MAI_T_COWARDLY) ? 70 : 50;
+    int           score;
 
     if (!is_hostile(mon) || mon->id == p_ptr->riding) return 0;
     if (!mon_ai_has_contact(mon)) return 0;
     if (r_ptr->flags1 & RF1_NEVER_MOVE) return 0;
     if (r_ptr->flags3 & RF3_NO_FEAR) return 0;
     if (MON_MONFEAR(mon) || MON_CONFUSED(mon)) return 0;  /* the old fear code handles that */
+    if (mon_ai_archetype(r_ptr) == MAI_A_BERSERKER) return 0;
     if (mon->intent == MAI_I_REGROUP)
     {
         /* Still being chased after 10 turns of running: turn and fight */
@@ -280,8 +403,62 @@ static int _retreat_score(mon_ptr mon)
         if (hp_pct < 70) return 40;
     }
     if (mon->shouted) return 0;  /* already broke off once: fights to the end now */
-    if (hp_pct >= 50 || morale >= 50) return 0;
-    return (50 - morale) + (50 - hp_pct);
+    if (hp_pct >= limit || morale >= limit) return 0;
+    score = (limit - morale) + (limit - hp_pct);
+    score -= 10 * mon_ai_temper(mon);  /* careful +10, aggressive -10 */
+    return MAX(0, score);
+}
+
+/* Ambusher heard (or smelt) but unseen, not yet close: stay hidden */
+static bool _lurk_ok(mon_ptr mon)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+
+    if (mon_ai_archetype(r_ptr) != MAI_A_AMBUSHER) return FALSE;
+    if (!is_hostile(mon) || mon->id == p_ptr->riding) return FALSE;
+    if (mon->ai_contact != MAI_C_HEARING && mon->ai_contact != MAI_C_SCENT) return FALSE;
+    if (mon->cdis <= 2) return FALSE;
+    if (mon->lurk >= 40) return FALSE;  /* patience runs out */
+    if (MON_CONFUSED(mon) || MON_MONFEAR(mon)) return FALSE;
+    if (projectable(mon->fy, mon->fx, py, px)) return FALSE;
+    return TRUE;
+}
+
+/* Guardians keep to within this many squares of their post */
+#define _GUARD_LEASH 7
+
+static bool _off_leash(mon_ptr mon, int y, int x)
+{
+    if (!mon->home_y && !mon->home_x) return FALSE;
+    return distance(mon->home_y, mon->home_x, y, x) > _GUARD_LEASH;
+}
+
+static int _home_step(mon_ptr mon)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+    if ( (r_ptr->flags2 & (RF2_PASS_WALL | RF2_KILL_WALL))
+      || los(mon->fy, mon->fx, mon->home_y, mon->home_x) )
+    {
+        return _greedy_step(mon, mon->home_y, mon->home_x);
+    }
+    return _path_step(mon, mon->home_y, mon->home_x);
+}
+
+/* Guardian: the player is beyond its leash. Returns TRUE and sets *dir to a
+ * step home (0 = already there: wait) */
+static bool _guard_ok(mon_ptr mon, int *dir)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+
+    if (mon_ai_archetype(r_ptr) != MAI_A_GUARDIAN) return FALSE;
+    if (!is_hostile(mon) || mon->id == p_ptr->riding) return FALSE;
+    if (mon->cdis <= 1) return FALSE;  /* in reach: fight */
+    if (r_ptr->flags1 & RF1_NEVER_MOVE) return FALSE;
+    if (MON_CONFUSED(mon) || MON_MONFEAR(mon)) return FALSE;
+    if (mon->lurk) return FALSE;  /* provoked */
+    if (!_off_leash(mon, py, px)) return FALSE;
+    *dir = distance(mon->fy, mon->fx, mon->home_y, mon->home_x) > 1 ? _home_step(mon) : 0;
+    return TRUE;
 }
 
 static int _squad_options(mon_ptr mon, mon_ai_decision_ptr d, int total);
@@ -311,14 +488,23 @@ void mon_ai_decide(mon_ptr mon, bool cast_blocked, mon_ai_decision_ptr d)
      * other monster sees exactly the classic cast-or-act choice. */
     if (total > 0)
     {
-        int dir = mon_ai_step_away_dir(mon);
+        int  dir = mon_ai_step_away_dir(mon), guard_dir = 0;
+        bool skirmish = FALSE;
+        if (!dir)
+        {
+            dir = _skirmish_dir(mon);
+            skirmish = dir ? TRUE : FALSE;
+        }
         if (dir)
         {
-            mon_ai_option_ptr step = _add_option(d, MAI_STEP_AWAY, "Frail in melee, square free", 60);
+            mon_ai_option_ptr step = skirmish
+                ? _add_option(d, MAI_STEP_AWAY, "Skirmisher: hit and run", 60)
+                : _add_option(d, MAI_STEP_AWAY, "Frail in melee, square free", 60);
             if (r_ptr->flags2 & RF2_SMART)
                 _term(step, "Smart", step->score + 15);
             if (mon->hp < mon->maxhp / 2)
                 _term(step, "Badly hurt", step->score + 15);
+            _temper_term(mon, step, 15);
             if (step->score > total)
                 _term(step, "Capped", total);
             total -= step->score;
@@ -338,9 +524,25 @@ void mon_ai_decide(mon_ptr mon, bool cast_blocked, mon_ai_decision_ptr d)
             mon_ai_option_ptr hold = _add_option(d, MAI_HOLD, "Frail, at range with a shot", 70);
             if (r_ptr->flags2 & RF2_SMART)
                 _term(hold, "Smart", hold->score + 15);
+            _temper_term(mon, hold, 15);
             if (hold->score > total)
                 _term(hold, "Capped", total);
             total -= hold->score;
+        }
+        else if (_lurk_ok(mon))
+        {
+            mon_ai_option_ptr lurk = _add_option(d, MAI_LURK, "Ambusher: heard, unseen", 80);
+            _temper_term(mon, lurk, 15);
+            if (lurk->score > total)
+                _term(lurk, "Capped", total);
+            total -= lurk->score;
+        }
+        else if (_guard_ok(mon, &guard_dir))
+        {
+            /* Certain: a guardian does not chase past its leash */
+            _add_option(d, MAI_GUARD, "Guardian: you are past its leash", total);
+            d->step_dir = guard_dir;
+            total = 0;
         }
     }
     total -= _squad_options(mon, d, total);
@@ -511,8 +713,33 @@ void mon_ai_perceive(mon_ptr mon)
     if (!is_hostile(mon)) return;
     if (mon_ai_tracked(mon)) mon_ai_stats.states[mon->ai_state]++;
 
+    /* Its post, for guardians: where it first became active */
+    if (!mon->home_y && !mon->home_x)
+    {
+        mon->home_y = mon->fy;
+        mon->home_x = mon->fx;
+    }
+
     c = _contact(mon);
     mon->ai_contact = c;
+
+    /* Provoked guardians calm down; an ambusher that has been lying in
+     * wait comes out when it sees you */
+    if (mon_ai_archetype(&r_info[mon->r_idx]) == MAI_A_GUARDIAN)
+    {
+        if (mon->lurk) mon->lurk--;
+    }
+    else if ((c == MAI_C_SIGHT || c == MAI_C_ADJACENT) && mon->lurk)
+    {
+        if (mon->lurk >= 3 && mon_show_msg(mon))
+        {
+            char m_name[MAX_NLEN];
+            monster_desc(m_name, mon, 0);
+            msg_format("%^s springs from hiding!", m_name);
+        }
+        mon->lurk = 0;
+    }
+
     if (c)
     {
         _know_player(mon);
@@ -661,6 +888,21 @@ bool mon_ai_track_moves(mon_ptr mon, int *mm)
     /* Regrouping out of sight: stay put and recover (mon_ai_intent_turn) */
     if (mon->intent == MAI_I_REGROUP) return FALSE;
 
+    /* Guardians don't follow you away from their post */
+    if ( mon_ai_archetype(r_ptr) == MAI_A_GUARDIAN
+      && !(r_ptr->flags1 & RF1_NEVER_MOVE)
+      && !mon->lurk
+      && (mon->ai_state == MAI_S_IDLE || _off_leash(mon, mon->lk_y, mon->lk_x)) )
+    {
+        int dir = 0;
+        if (distance(mon->fy, mon->fx, mon->home_y, mon->home_x) > 1)
+            dir = _home_step(mon);
+        if (!dir) return FALSE;
+        mm[0] = dir;
+        mm[1] = 0;
+        return TRUE;
+    }
+
     if (mon->ai_state == MAI_S_TRACKING)
     {
         int dir;
@@ -725,6 +967,11 @@ static void _lose_morale(mon_ptr mon, int amt)
     if (amt <= 0) return;
     if (r_ptr->flags3 & RF3_NO_FEAR) return;
     if (r_ptr->flags1 & RF1_UNIQUE) amt /= 2;
+    if (r_ptr->ai_traits & MAI_T_BRAVE) amt /= 2;
+    if (r_ptr->ai_traits & MAI_T_COWARDLY) amt = amt * 3 / 2;
+    if (mon_ai_archetype(r_ptr) == MAI_A_BERSERKER) amt /= 2;
+    if (mon_ai_courage(mon) < 0) amt = amt * 4 / 3;
+    else if (mon_ai_courage(mon) > 0) amt = amt * 2 / 3;
     if (_leader_near(mon)) amt /= 2;  /* a leader in sight steadies the ranks */
     mon->morale_lost = MIN(100, mon->morale_lost + amt);
 }
@@ -750,6 +997,11 @@ void mon_ai_on_hurt(mon_ptr mon, int dam)
 
     /* Being hurt is unnerving: morale drops by the share of health lost */
     _lose_morale(mon, pct);
+
+    /* A guardian shot at from beyond its leash comes after you for a while
+     * (mon->lurk counts down the provocation for guardians) */
+    if (mon_ai_archetype(&r_info[mon->r_idx]) == MAI_A_GUARDIAN && _off_leash(mon, py, px))
+        mon->lurk = 20;
 
     /* A solid hit breaks the concentration of a charging monster */
     if (mon->intent == MAI_I_CHARGE && pct >= 10)
@@ -940,6 +1192,10 @@ int mon_ai_role(mon_ptr mon)
             mon->ai_role = MAI_R_SUPPORT;
         else if (arch == MAI_A_ARTILLERY)
             mon->ai_role = MAI_R_ARTILLERY;
+        else if (arch == MAI_A_SKIRMISHER)
+            mon->ai_role = MAI_R_FLANKER;
+        else if (arch == MAI_A_GUARDIAN || arch == MAI_A_BERSERKER)
+            mon->ai_role = MAI_R_FRONTLINE;
         else if (mon->id % 3 == 0)
             mon->ai_role = MAI_R_FLANKER;
         else

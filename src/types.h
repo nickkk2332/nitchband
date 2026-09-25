@@ -783,6 +783,10 @@ struct monster_type
     byte morale_lost;     /* morale is 100 - morale_lost (so 0 = steady) */
     byte shouted;         /* already called for help while retreating */
     byte ai_role;         /* MAI_R_*: role in its pack (0 = not assigned yet) */
+    byte ai_pers;         /* personality bits (0 = not worked out yet) */
+    byte struck;          /* hit the player in melee on its last turn */
+    byte lurk;            /* turns spent lying in wait (ambushers) */
+    byte home_y, home_x;  /* where it was first active (guardians keep to it) */
 
     s32b pexp;    /* player experience gained (x100). kept <= r_ptr->mexp */
 };

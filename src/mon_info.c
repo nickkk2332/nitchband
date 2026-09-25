@@ -719,6 +719,14 @@ static void _display_other(monster_race *r_ptr, doc_ptr doc)
     int        ct = 0, i;
     vec_ptr    v = vec_alloc((vec_free_f)string_free);
 
+    /* Fighting style from the race file's T: line, once you have fought it */
+    if (r_ptr->ai_arch && (_easy_lore(r_ptr) || r_ptr->r_tkills))
+        vec_add(v, string_copy_s(format("<color:B>Fights as %s</color>", mon_ai_archetype_article(r_ptr->ai_arch))));
+    if ((r_ptr->ai_traits & MAI_T_COWARDLY) && (_easy_lore(r_ptr) || r_ptr->r_tkills))
+        vec_add(v, string_copy_s("<color:y>Cowardly</color>"));
+    if ((r_ptr->ai_traits & MAI_T_BRAVE) && (_easy_lore(r_ptr) || r_ptr->r_tkills))
+        vec_add(v, string_copy_s("<color:R>Brave</color>"));
+
     if (r_ptr->flags2 & RF2_KILL_WALL)
         vec_add(v, string_copy_s("<color:U>Destroys Walls</color>"));
 

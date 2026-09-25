@@ -2924,6 +2924,9 @@ static void process_monster(int m_idx)
         if (mon_ai_tracked(&m_list[m_idx])) mon_ai_stats.kinds[ai_kind]++;
     }
 
+    /* Hit-and-run looks at last turn's melee only */
+    m_ptr->struck = 0;
+
     /* XXX Regain mana (EXPERIMENTAL) */
     if (m_ptr->mana)
         m_ptr->mana--;
@@ -2938,6 +2941,16 @@ static void process_monster(int m_idx)
      * through: it waits rather than closing in / jostling */
     if (ai_kind == MAI_HOLD || ai_kind == MAI_WAIT) return;
 
+    /* Ambusher lying in wait out of sight */
+    if (ai_kind == MAI_LURK)
+    {
+        if (m_ptr->lurk < 255) m_ptr->lurk++;
+        return;
+    }
+
+    /* Guardian keeping to its post: at it, it waits */
+    if (ai_kind == MAI_GUARD && !decision.step_dir) return;
+
     /* Shaken and hurt: break off to regroup (unless cornered) */
     if (ai_kind == MAI_RETREAT)
     {
@@ -2951,8 +2964,9 @@ static void process_monster(int m_idx)
         /* mm[] already set by mon_ai_retreat_moves */
     }
 
-    /* Squad flanker going round to the player's far side */
-    else if (ai_kind == MAI_FLANK && decision.step_dir)
+    /* Squad flanker going round to the player's far side, or a guardian
+     * heading back to its post */
+    else if ((ai_kind == MAI_FLANK || ai_kind == MAI_GUARD) && decision.step_dir)
     {
         mm[0] = decision.step_dir;
         mm[1] = 0;
@@ -3413,6 +3427,7 @@ static void process_monster(int m_idx)
                 {
                     /* Do the attack */
                     if (mon_ai_tracked(&m_list[m_idx])) mon_ai_stats.melee++;
+                    m_ptr->struck = 1;
                     (void)make_attack_normal(m_idx);
                     if ((r_ptr->flags2 & RF2_INVISIBLE) && p_ptr->see_inv && !m_ptr->ml)
                         update_mon(m_idx, FALSE);

@@ -21,6 +21,8 @@ enum {
     MAI_RETREAT,     /* shaken and hurt: break off and regroup */
     MAI_FLANK,       /* squad flanker: go around to the player's far side */
     MAI_WAIT,        /* squad member that can't reach the player: wait, don't jostle */
+    MAI_LURK,        /* ambusher: lie in wait out of sight */
+    MAI_GUARD,       /* guardian: keep to its post (step_dir heads back to it) */
     MAI_PHYSICAL,    /* everything else: move, melee, breed, pick up, ... */
     MAI_KIND_MAX
 };
@@ -45,7 +47,7 @@ typedef struct {
     int             option_ct;
     mon_ai_option_t options[MAI_MAX_OPTIONS];
     int             choice;  /* index into options; -1 until chosen */
-    int             step_dir; /* keypad direction for MAI_STEP_AWAY or MAI_FLANK */
+    int             step_dir; /* keypad direction for MAI_STEP_AWAY, MAI_FLANK or MAI_GUARD */
 } mon_ai_decision_t, *mon_ai_decision_ptr;
 
 /* Score this turn's options. No random numbers are used. */
@@ -184,8 +186,22 @@ enum {
 #define MAI_T_BRAVE     0x0002  /* hard to shake */
 extern int  mon_ai_archetype(monster_race *r_ptr);
 extern cptr mon_ai_archetype_name(int arch);
+extern cptr mon_ai_archetype_article(int arch);  /* "a Skirmisher", "an Ambusher" */
 extern bool mon_ai_race_kites(monster_race *r_ptr);
 extern errr mon_ai_parse_tactics(monster_race *r_ptr, char *buf);
+
+/* Percent applied to the default weight of a spell type (MST_*) for the
+ * race's archetype: tricksters favour tactics, escapes and status spells,
+ * support monsters heals and buffs, berserkers never escape. */
+extern int  mon_ai_spell_type_pct(monster_race *r_ptr, int type);
+
+/* Individual personality, fixed per monster (no random numbers are used):
+ * courage -1 timid, 0 steady, +1 bold (how fast it loses heart); temper
+ * -1 careful, 0 even, +1 aggressive (keeping distance, retreating, lying
+ * in wait). Uniques are always steady and even: they are written by hand. */
+extern int  mon_ai_courage(mon_ptr mon);
+extern int  mon_ai_temper(mon_ptr mon);
+extern void mon_ai_describe_tactics(mon_ptr mon, doc_ptr doc);
 
 /* Player actions make noise; monsters hear a loud player from farther */
 #define MAI_NOISE_MELEE   6
