@@ -957,22 +957,34 @@ static int _flank_dir(mon_ptr mon)
     fy /= ct;
     fx /= ct;
 
+    /* Worth going round only for a square well away from the others that
+     * is not a long detour: two squares of spread per extra step. */
     for (d = 0; d < 8; d++)
     {
-        int y = py + ddy_ddd[d], x = px + ddx_ddd[d], dist;
+        int y = py + ddy_ddd[d], x = px + ddx_ddd[d], spread, walk, score;
         if (!in_bounds2(y, x) || cave[y][x].m_idx) continue;
         if (!_passable(&r_info[mon->r_idx], y, x)) continue;
-        dist = distance(fy, fx, y, x);
-        if (dist > best_d)
+        spread = distance(fy, fx, y, x);
+        walk = distance(mon->fy, mon->fx, y, x);
+        if (spread < 2 || walk > mon->cdis + 2) continue;
+        score = 2 * spread - walk;
+        if (score > best_d)
         {
-            best_d = dist;
+            best_d = score;
             ty = y;
             tx = x;
         }
     }
-    if (best_d < 2) return 0;  /* no square on the far side */
-    if (mon->fy == ty && mon->fx == tx) return 0;
-    return _path_step(mon, ty, tx);
+    if (best_d < 0) return 0;  /* no square on the far side */
+    d = _path_step(mon, ty, tx);
+    if (!d) return 0;
+
+    /* A packmate in the way: close in normally rather than stand still */
+    {
+        int y = mon->fy + ddy[d], x = mon->fx + ddx[d];
+        if (!in_bounds2(y, x) || cave[y][x].m_idx) return 0;
+    }
+    return d;
 }
 
 /* Squad options for mon_ai_decide(). Returns the score used. */
