@@ -1405,8 +1405,13 @@ static void _announce_charge(mon_spell_cast_ptr cast)
     if (cast->spell->id.type == MST_BREATH)
         msg_format("%s draws a deep breath...", cast->name);
     else
-        msg_format("%s gathers power for <color:%c>%s</color>...", cast->name,
-            attr_to_attr_char(cast->spell->display->color), cast->spell->display->name);
+    {
+        /* Balls and bolts parsed from BA_xxx/BO_xxx have no display record */
+        string_ptr s = string_alloc();
+        mon_spell_print(cast->spell, s);
+        msg_format("%s gathers power for %s...", cast->name, string_buffer(s));
+        string_free(s);
+    }
 }
 
 static void _mon_desc(mon_ptr mon, char *buf, char color)
