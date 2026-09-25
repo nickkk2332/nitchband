@@ -772,6 +772,14 @@ struct monster_type
      * back to the live value). Not saved. */
     s16b res_seen[RES_MAX];
 
+    /* Intent and morale (mon_ai.c; not saved) */
+    byte intent;          /* MAI_I_*: a multi-turn plan */
+    byte intent_timer;
+    byte intent_type;     /* charged spell (type + 1) */
+    s16b intent_effect;
+    byte morale_lost;     /* morale is 100 - morale_lost (so 0 = steady) */
+    byte shouted;         /* already called for help while retreating */
+
     s32b pexp;    /* player experience gained (x100). kept <= r_ptr->mexp */
 };
 

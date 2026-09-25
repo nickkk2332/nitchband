@@ -182,6 +182,23 @@ static bool _hold_ok(mon_ptr mon)
     return TRUE;
 }
 
+/* How much a shaken, hurt monster wants to break off (0 = not at all) */
+static int _retreat_score(mon_ptr mon)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+    int           morale = mon_ai_morale(mon);
+    int           hp_pct = mon->hp * 100 / MAX(1, mon->maxhp);
+
+    if (!is_hostile(mon) || mon->id == p_ptr->riding) return 0;
+    if (!mon_ai_has_contact(mon)) return 0;
+    if (r_ptr->flags1 & RF1_NEVER_MOVE) return 0;
+    if (r_ptr->flags3 & RF3_NO_FEAR) return 0;
+    if (MON_MONFEAR(mon) || MON_CONFUSED(mon)) return 0;  /* the old fear code handles that */
+    if (mon->intent == MAI_I_REGROUP && hp_pct < 70) return 40;
+    if (hp_pct >= 50 || morale >= 50) return 0;
+    return (50 - morale) + (50 - hp_pct);
+}
+
 void mon_ai_decide(mon_ptr mon, bool cast_blocked, mon_ai_decision_ptr d)
 {
     monster_race *r_ptr = &r_info[mon->r_idx];
@@ -219,6 +236,15 @@ void mon_ai_decide(mon_ptr mon, bool cast_blocked, mon_ai_decision_ptr d)
                 _term(step, "Capped", total);
             total -= step->score;
             d->step_dir = dir;
+        }
+        else if (_retreat_score(mon))
+        {
+            mon_ai_option_ptr opt = _add_option(d, MAI_RETREAT, "Shaken and hurt", _retreat_score(mon));
+            if (mon->intent == MAI_I_REGROUP)
+                _term(opt, "Already regrouping", MAX(opt->score, total * 4 / 5));
+            if (opt->score > total)
+                _term(opt, "Capped", total);
+            total -= opt->score;
         }
         else if (_hold_ok(mon))
         {
@@ -413,6 +439,9 @@ void mon_ai_perceive(mon_ptr mon)
         return;
     }
 
+    /* Morale recovers out of contact */
+    if (mon->morale_lost) mon->morale_lost = MAX(0, mon->morale_lost - 3);
+
     /* No contact. A newly woken, loaded or placed monster knew roughly
      * where the player was. */
     if (mon->ai_state == MAI_S_UNSET)
@@ -540,6 +569,9 @@ bool mon_ai_track_moves(mon_ptr mon, int *mm)
 {
     monster_race *r_ptr = &r_info[mon->r_idx];
 
+    /* Regrouping out of sight: stay put and recover (mon_ai_intent_turn) */
+    if (mon->intent == MAI_I_REGROUP) return FALSE;
+
     if (mon->ai_state == MAI_S_TRACKING)
     {
         int dir;
@@ -573,6 +605,196 @@ bool mon_ai_track_moves(mon_ptr mon, int *mm)
     {
         mm[0] = mm[1] = mm[2] = mm[3] = 5;
         return TRUE;
+    }
+    return FALSE;
+}
+
+/*************************************************************************
+ * Intents and morale
+ ************************************************************************/
+cptr mon_ai_intent_name(int intent)
+{
+    switch (intent)
+    {
+    case MAI_I_NONE: return "None";
+    case MAI_I_CHARGE: return "Charging a spell";
+    case MAI_I_REGROUP: return "Regrouping";
+    }
+    return "?";
+}
+
+int mon_ai_morale(mon_ptr mon)
+{
+    return 100 - mon->morale_lost;
+}
+
+static void _lose_morale(mon_ptr mon, int amt)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+    if (amt <= 0) return;
+    if (r_ptr->flags3 & RF3_NO_FEAR) return;
+    if (r_ptr->flags1 & RF1_UNIQUE) amt /= 2;
+    mon->morale_lost = MIN(100, mon->morale_lost + amt);
+}
+
+static void _interrupt(mon_ptr mon, cptr how)
+{
+    if (mon->intent != MAI_I_CHARGE) return;
+    mon->intent = MAI_I_NONE;
+    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.interrupts++;
+    if (mon_show_msg(mon))
+    {
+        char m_name[MAX_NLEN];
+        monster_desc(m_name, mon, 0);
+        msg_format("%^s %s", m_name, how);
+    }
+}
+
+void mon_ai_on_hurt(mon_ptr mon, int dam)
+{
+    int pct;
+    if (dam <= 0 || !mon->maxhp) return;
+    pct = MIN(100, dam * 100 / mon->maxhp);
+
+    /* Being hurt is unnerving: half the share of health lost */
+    _lose_morale(mon, pct / 2);
+
+    /* A solid hit breaks the concentration of a charging monster */
+    if (mon->intent == MAI_I_CHARGE && pct >= 10)
+        _interrupt(mon, "is interrupted!");
+}
+
+void mon_ai_on_disabled(mon_ptr mon)
+{
+    if (mon->intent == MAI_I_CHARGE)
+        _interrupt(mon, "loses its focus!");
+}
+
+void mon_ai_on_ally_death(mon_ptr dead)
+{
+    pack_info_t *pack = pack_info_ptr(dead->id);
+    int          i;
+
+    if (!pack) return;
+    for (i = 1; i < m_max; i++)
+    {
+        mon_ptr mate = &m_list[i];
+        if (i == dead->id || !mate->r_idx || mate->pack_idx != dead->pack_idx) continue;
+        if (distance(mate->fy, mate->fx, dead->fy, dead->fx) > 15) continue;
+        _lose_morale(mate, pack->leader_idx == dead->id ? 30 : 12);
+    }
+}
+
+void mon_ai_start_charge(mon_ptr mon, int type, int effect)
+{
+    mon->intent = MAI_I_CHARGE;
+    mon->intent_timer = 3;  /* released next turn; held up to 2 more if it has no shot */
+    mon->intent_type = type + 1;
+    mon->intent_effect = effect;
+    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.charges++;
+}
+
+/* Wake sleeping monsters nearby and tell them where the player is */
+static void _shout_for_help(mon_ptr mon)
+{
+    int i, woke = 0;
+    for (i = 1; i < m_max; i++)
+    {
+        mon_ptr other = &m_list[i];
+        if (i == mon->id || !other->r_idx || !is_hostile(other)) continue;
+        if (distance(mon->fy, mon->fx, other->fy, other->fx) > 6) continue;
+        if (MON_CSLEEP(other))
+        {
+            (void)set_monster_csleep(i, 0);
+            woke++;
+        }
+        mon_ai_alert(other);
+    }
+    mon->shouted = TRUE;
+    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.shouts++;
+    if (woke && mon_show_msg(mon))
+    {
+        char m_name[MAX_NLEN];
+        monster_desc(m_name, mon, 0);
+        msg_format("%^s shouts for help!", m_name);
+    }
+}
+
+bool mon_ai_retreat_moves(mon_ptr mon, int *mm)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+    int           d, best_dir = 0, best_score = -1000;
+
+    if (!mon->shouted) _shout_for_help(mon);
+    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.retreats++;
+
+    for (d = 0; d < 8; d++)
+    {
+        int y = mon->fy + ddy_ddd[d], x = mon->fx + ddx_ddd[d];
+        int score;
+        if (!in_bounds2(y, x)) continue;
+        if (!monster_can_enter(y, x, r_ptr, 0) && !is_closed_door(cave[y][x].feat)) continue;
+        score = 10 * (distance(py, px, y, x) - mon->cdis);
+        if (!los(y, x, py, px)) score += 15;       /* out of sight is safer */
+        score += _open_neighbours(r_ptr, y, x);   /* avoid dead ends */
+        if (score > best_score)
+        {
+            best_score = score;
+            best_dir = ddd[d];
+        }
+    }
+    if (!best_dir || best_score < 0) return FALSE;  /* cornered: fight on */
+    mm[0] = best_dir;
+    mm[1] = 0;
+    return TRUE;
+}
+
+bool mon_ai_intent_turn(mon_ptr mon)
+{
+    if (mon->intent == MAI_I_CHARGE)
+    {
+        if (MON_CONFUSED(mon) || MON_STUNNED(mon))
+        {
+            mon_ai_on_disabled(mon);
+            return FALSE;
+        }
+        if (mon_spell_cast_charged(mon, mon->intent_type - 1, mon->intent_effect))
+        {
+            if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.releases++;
+            mon->intent = MAI_I_NONE;
+            return TRUE;
+        }
+        /* No shot this turn: hold the charge for a little while */
+        if (mon->intent_timer) mon->intent_timer--;
+        if (!mon->intent_timer)
+        {
+            mon->intent = MAI_I_NONE;
+            if (mon_show_msg(mon))
+            {
+                char m_name[MAX_NLEN];
+                monster_desc(m_name, mon, 0);
+                msg_format("%^s lets the gathered power fade.", m_name);
+            }
+            return FALSE;
+        }
+        return TRUE;
+    }
+
+    if (mon->intent == MAI_I_REGROUP)
+    {
+        /* Out of contact: lick wounds until ready, then go back */
+        if (!mon_ai_has_contact(mon))
+        {
+            if (mon->hp < mon->maxhp)
+                (void)hp_mon(mon, MAX(1, mon->maxhp / 50), FALSE);
+            if (mon->hp * 10 >= mon->maxhp * 7 && mon_ai_morale(mon) >= 60)
+            {
+                mon->intent = MAI_I_NONE;
+                mon->shouted = FALSE;
+                mon->ai_state = MAI_S_TRACKING;  /* return to the last known position */
+            }
+            return FALSE;
+        }
     }
     return FALSE;
 }

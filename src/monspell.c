@@ -1357,6 +1357,38 @@ static void _spell_cast_aux(void);
 static bool _default_ai(mon_spell_cast_ptr cast);
 static bool _default_ai_mon(mon_spell_cast_ptr cast);
 static void _ai_remember(mon_spell_cast_ptr cast);
+int _avg_spell_dam(mon_ptr mon, mon_spell_ptr spell);
+static bool _projectable(point_t src, point_t dest);
+
+/* Big hits are announced a turn ahead (see mon_ai.c intents): breaths and
+ * attack spells whose average damage is at least a quarter of the player's
+ * maximum HP. Hounds (packs of weak breathers) are exempt. */
+static bool _should_charge(mon_spell_cast_ptr cast)
+{
+    int dam;
+    if (!(cast->flags & MSC_SRC_MONSTER) || !(cast->flags & MSC_DEST_PLAYER)) return FALSE;
+    if (!(cast->flags & MSC_DIRECT) || (cast->flags & MSC_SPLASH)) return FALSE;
+    if (cast->race->d_char == 'Z') return FALSE;
+    switch (cast->spell->id.type)
+    {
+    case MST_BREATH: case MST_BALL: case MST_BOLT: case MST_BEAM: case MST_CURSE:
+        break;
+    default:
+        return FALSE;
+    }
+    dam = _avg_spell_dam(cast->mon, cast->spell);
+    return dam >= 15 && dam * 4 >= p_ptr->mhp;
+}
+
+static void _announce_charge(mon_spell_cast_ptr cast)
+{
+    if (!mon_show_msg(cast->mon)) return;
+    if (cast->spell->id.type == MST_BREATH)
+        msg_format("%s draws a deep breath...", cast->name);
+    else
+        msg_format("%s gathers power for <color:%c>%s</color>...", cast->name,
+            attr_to_attr_char(cast->spell->display->color), cast->spell->display->name);
+}
 
 static void _mon_desc(mon_ptr mon, char *buf, char color)
 {
@@ -1446,6 +1478,16 @@ bool mon_spell_cast(mon_ptr mon, mon_spell_ai ai)
         }
 
         _ai_remember(&cast);
+
+        /* Telegraph a big hit: announce now, release next turn */
+        if (_should_charge(&cast))
+        {
+            _announce_charge(&cast);
+            mon_ai_start_charge(mon, cast.spell->id.type, cast.spell->id.effect);
+            disturb(1, 0);
+            return TRUE;
+        }
+
         if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.spells++;
         _current = cast;
         _spell_cast_aux();
@@ -1453,6 +1495,30 @@ bool mon_spell_cast(mon_ptr mon, mon_spell_ai ai)
         return TRUE;
     }
     return FALSE;
+}
+
+/* Release a spell announced last turn. FALSE if it can't be cast now
+ * (no line of fire, lost the player, ...); the caller decides whether to
+ * keep holding it. */
+bool mon_spell_cast_charged(mon_ptr mon, int type, int effect)
+{
+    mon_spell_cast_t cast = {0};
+
+    if (!_can_cast(mon)) return FALSE;
+    _spell_cast_init(&cast, mon);
+    if (!cast.race->spells) return FALSE;
+    cast.spell = mon_spells_find(cast.race->spells, _id(type, effect));
+    if (!cast.spell) return FALSE;
+    if (!_projectable(cast.src, cast.dest)) return FALSE;
+    cast.flags |= MSC_DIRECT;
+    if (py_in_dungeon() && (d_info[dungeon_type].flags1 & DF1_NO_MAGIC) && _not_innate_p(cast.spell))
+        return FALSE;
+
+    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.spells++;
+    _current = cast;
+    _spell_cast_aux();
+    memset(&_current, 0, sizeof(mon_spell_cast_t));
+    return TRUE;
 }
 
 bool mon_spell_cast_mon(mon_ptr mon, mon_spell_ai ai)
@@ -6048,6 +6114,18 @@ void mon_ai_wizard(mon_ptr mon, doc_ptr doc)
         if (mon->ai_state == MAI_S_SEARCHING)
             doc_printf(doc, "Searching for %d more turns\n", mon->ai_timer);
     }
+    doc_printf(doc, "Morale %d%%, intent: %s", mon_ai_morale(mon), mon_ai_intent_name(mon->intent));
+    if (mon->intent == MAI_I_CHARGE && race->spells)
+    {
+        mon_spell_ptr charged = mon_spells_find(race->spells, _id(mon->intent_type - 1, mon->intent_effect));
+        if (charged)
+        {
+            doc_insert(doc, " (");
+            mon_spell_doc(charged, doc);
+            doc_insert(doc, ")");
+        }
+    }
+    doc_newline(doc);
     doc_printf(doc, "Melee: ~%d dam/turn%s\n", mon_race_avg_melee_dam(race),
         mon_race_weak_melee(race) ? " <color:o>(frail in melee)</color>" : "");
     doc_printf(doc, "Anger %d  Mana %d", mon->anger, mon->mana);

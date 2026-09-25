@@ -170,6 +170,7 @@ extern bool           mon_spell_cast(mon_ptr mon, mon_spell_ai ai);
 extern bool           mon_spell_cast_mon(mon_ptr mon, mon_spell_ai ai);
 extern void           mon_spell_wizard(mon_ptr mon, mon_spell_ai ai, doc_ptr doc);
 extern void           mon_ai_wizard(mon_ptr mon, doc_ptr doc);
+extern bool           mon_spell_cast_charged(mon_ptr mon, int type, int effect);
 extern void           mon_ai_wizard_summary(doc_ptr doc);
 extern mon_spell_ptr  mon_spell_find(mon_race_ptr race, mon_spell_id_t id);
 extern bool           mon_spell_cast_possessor(mon_race_ptr race);

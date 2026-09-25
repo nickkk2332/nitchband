@@ -734,6 +734,8 @@ void pack_on_slay_monster(int m_idx)
 {
     monster_type *m_ptr = &m_list[m_idx];
 
+    mon_ai_on_ally_death(m_ptr);
+
     if (m_ptr->pack_idx)
     {
         pack_info_t *pack_ptr = &pack_info_list[m_ptr->pack_idx];

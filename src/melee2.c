@@ -380,6 +380,8 @@ void mon_take_hit_mon(int m_idx, int dam, bool *fear, cptr note, int who)
     /* Can the player be aware of this attack? */
     bool known = (m_ptr->cdis <= MAX_SIGHT);
 
+    mon_ai_on_hurt(m_ptr, dam);
+
     /* Extract monster name */
     monster_desc(m_name, m_ptr, 0);
 
@@ -2815,6 +2817,9 @@ static void process_monster(int m_idx)
     /* Does the monster know where the player is? (mon_ai.c) */
     mon_ai_perceive(m_ptr);
 
+    /* Carry on with a multi-turn plan (release a charged spell, ...) */
+    if (mon_ai_intent_turn(m_ptr)) return;
+
     /* Try to cast spell occasionally */
     if (r_ptr->spells)
     {
@@ -2910,6 +2915,14 @@ static void process_monster(int m_idx)
             }
         }
     }
+    else
+    {
+        /* No spells: the decision is only about how to move (no cast option,
+         * so no random roll unless something like a retreat is on offer) */
+        mon_ai_decide(m_ptr, TRUE, &decision);
+        ai_kind = mon_ai_choose(&decision);
+        if (mon_ai_stats.m_idx == m_idx) mon_ai_stats.kinds[ai_kind]++;
+    }
 
     /* XXX Regain mana (EXPERIMENTAL) */
     if (m_ptr->mana)
@@ -2924,8 +2937,21 @@ static void process_monster(int m_idx)
     /* Frail caster keeping its distance: it waits rather than closing in */
     if (ai_kind == MAI_HOLD) return;
 
+    /* Shaken and hurt: break off to regroup (unless cornered) */
+    if (ai_kind == MAI_RETREAT)
+    {
+        m_ptr->intent = MAI_I_REGROUP;
+        if (!mon_ai_retreat_moves(m_ptr, mm))
+            ai_kind = MAI_PHYSICAL;  /* nowhere to go: fight on */
+    }
+
+    if (ai_kind == MAI_RETREAT)
+    {
+        /* mm[] already set by mon_ai_retreat_moves */
+    }
+
     /* Frail caster backing out of melee (chosen in mon_ai_decide) */
-    if (ai_kind == MAI_STEP_AWAY && decision.step_dir)
+    else if (ai_kind == MAI_STEP_AWAY && decision.step_dir)
     {
         mm[0] = decision.step_dir;
         mm[1] = 0;
@@ -4317,6 +4343,8 @@ bool set_monster_stunned(int m_idx, int v)
     monster_type *m_ptr = &m_list[m_idx];
     bool notice = FALSE;
 
+    if (v > 0) mon_ai_on_disabled(m_ptr);
+
     v = _bound(v, _range(0, 200));
     if (v)
     {
@@ -4341,6 +4369,8 @@ bool set_monster_confused(int m_idx, int v)
 {
     monster_type *m_ptr = &m_list[m_idx];
     bool notice = FALSE;
+
+    if (v > 0) mon_ai_on_disabled(m_ptr);
 
     v = _bound(v, _range(0, 200));
     if (v)

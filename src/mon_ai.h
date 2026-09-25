@@ -18,6 +18,7 @@ enum {
     MAI_CAST = 0,    /* try a spell; the spell AI in monspell.c chooses which */
     MAI_STEP_AWAY,   /* frail caster backs off from the player (one step) */
     MAI_HOLD,        /* frail caster at range keeps its distance (waits) */
+    MAI_RETREAT,     /* shaken and hurt: break off and regroup */
     MAI_PHYSICAL,    /* everything else: move, melee, breed, pick up, ... */
     MAI_KIND_MAX
 };
@@ -107,6 +108,32 @@ extern bool mon_ai_track_moves(mon_ptr mon, int *mm);
 /* The monster learns where the player is (woken up, hurt by the player) */
 extern void mon_ai_alert(mon_ptr mon);
 
+/* Intents: plans that span turns.
+ * - Charge: a big spell is announced one turn before it is released; enough
+ *   damage, a stun or confusion interrupts it.
+ * - Regroup: a shaken, hurt monster breaks contact, recovers, then returns
+ *   to where it last knew the player to be. */
+enum {
+    MAI_I_NONE = 0,
+    MAI_I_CHARGE,
+    MAI_I_REGROUP,
+    MAI_I_MAX
+};
+extern cptr mon_ai_intent_name(int intent);
+
+/* Start of a monster's turn: carry out an ongoing intent. TRUE if that
+ * used the turn. */
+extern bool mon_ai_intent_turn(mon_ptr mon);
+extern void mon_ai_start_charge(mon_ptr mon, int type, int effect);
+extern bool mon_ai_retreat_moves(mon_ptr mon, int *mm);
+
+/* Morale: 100 is steady. Damage and packmates dying lower it; it recovers
+ * out of contact. */
+extern int  mon_ai_morale(mon_ptr mon);
+extern void mon_ai_on_hurt(mon_ptr mon, int dam);
+extern void mon_ai_on_disabled(mon_ptr mon);   /* stunned or confused */
+extern void mon_ai_on_ally_death(mon_ptr dead);
+
 /* Player actions make noise; monsters hear a loud player from farther */
 #define MAI_NOISE_MELEE   6
 #define MAI_NOISE_MISSILE 4
@@ -127,6 +154,11 @@ typedef struct {
     int tele_other;         /* teleported the player away */
     int melee;              /* melee attacks on the player */
     int states[MAI_S_MAX];  /* perception state at the start of its turns */
+    int charges;            /* big spells announced */
+    int releases;           /* ... and released */
+    int interrupts;         /* ... and interrupted */
+    int retreats;           /* turns spent retreating */
+    int shouts;             /* called for help */
 } mon_ai_stats_t;
 extern mon_ai_stats_t mon_ai_stats;
 
