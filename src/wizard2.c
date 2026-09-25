@@ -1821,6 +1821,32 @@ static void _wiz_player_chase_step(int m_idx)
         move_player_effect(py + ddy_ddd[best_d], px + ddx_ddd[best_d], MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
 }
 
+/* Group mode: move the player to the nearest square in the open (all 8
+ * neighbours walkable, and theirs too) so squad tactics are tested in a
+ * room rather than against a building */
+static void _wiz_kite_open_ground(void)
+{
+    int y, x, best_d = 999, by = 0, bx = 0;
+    for (y = MAX(2, py - 25); y <= MIN(cur_hgt - 3, py + 25); y++)
+    {
+        for (x = MAX(2, px - 25); x <= MIN(cur_wid - 3, px + 25); x++)
+        {
+            int yy, xx, d = distance(py, px, y, x);
+            bool open = TRUE;
+            if (d >= best_d) continue;
+            for (yy = y - 2; yy <= y + 2 && open; yy++)
+                for (xx = x - 2; xx <= x + 2 && open; xx++)
+                    if (!cave_have_flag_bold(yy, xx, FF_MOVE) || cave[yy][xx].m_idx) open = FALSE;
+            if (!open) continue;
+            best_d = d;
+            by = y;
+            bx = x;
+        }
+    }
+    if (best_d < 999 && (by != py || bx != px))
+        move_player_effect(by, bx, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
+}
+
 /* Group mode: the nearest living member of the tagged group, or 0 */
 static int _wiz_kite_focus(u16b tag, int *alive, int *adjacent, bool *flanked)
 {
@@ -1911,6 +1937,7 @@ static void _wiz_ai_kite(void)
     bool    chase, hide, fight;
     char    buf[81];
     int     start_y = py, start_x = px;
+    int     orig_y = py, orig_x = px;
     s32b    old_game_turn = game_turn;
     byte    old_max;
     u32b    seed = 0, fingerprint = 0;
@@ -1965,6 +1992,13 @@ static void _wiz_ai_kite(void)
     old_max = r_info[r_idx].max_num;
     statistics_hack = TRUE;
     wiz_immortal = TRUE;
+    if (group)
+    {
+        do_cmd_wiz_zap_all();
+        _wiz_kite_open_ground();
+        start_y = py;
+        start_x = px;
+    }
     WIPE(&mon_ai_stats, mon_ai_stats_t);
 
     for (i = 0; i < trials; i++)
@@ -2074,6 +2108,8 @@ static void _wiz_ai_kite(void)
     s = mon_ai_stats;
     WIPE(&mon_ai_stats, mon_ai_stats_t);
     do_cmd_wiz_zap_all();
+    if ((py != orig_y || px != orig_x) && cave_empty_bold(orig_y, orig_x))
+        move_player_effect(orig_y, orig_x, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
     p_ptr->exp = exp0;
     p_ptr->max_exp = max_exp0;
     check_experience();
