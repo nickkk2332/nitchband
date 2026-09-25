@@ -1845,9 +1845,10 @@ static void _wiz_ai_kite(void)
     int     r_idx, trials, turns, i, t, k;
     int     player_turns = 0, player_adjacent = 0, fails = 0, player_energy;
     int     test_speed = p_ptr->pspeed;
-    int     found = 0;
-    s32b    find_turns = 0;
-    bool    chase, hide;
+    int     found = 0, kills = 0;
+    s32b    find_turns = 0, kill_turns = 0;
+    s32b    exp0 = p_ptr->exp, max_exp0 = p_ptr->max_exp;
+    bool    chase, hide, fight;
     char    buf[81];
     int     start_y = py, start_x = px;
     s32b    old_game_turn = game_turn;
@@ -1859,6 +1860,7 @@ static void _wiz_ai_kite(void)
     u32b    old_rand_state[RAND_DEG];
     mon_ai_stats_t s;
     doc_ptr doc;
+    u16b    kite_tag = quark_add("<kite>");
 
     if (p_ptr->inside_arena || p_ptr->inside_battle || p_ptr->wild_mode || p_ptr->riding)
     {
@@ -1878,8 +1880,9 @@ static void _wiz_ai_kite(void)
     if (turns < 10) turns = 10;
     if (turns > 20000) turns = 20000;
     strcpy(buf, "c");
-    if (!msg_input("Player (c)hases, (s)tands still, or (t)eleports away and hides? ", buf, 2)) return;
+    if (!msg_input("Player (c)hases, (f)ights, (s)tands still, or (t)eleports away and hides? ", buf, 2)) return;
     hide = (buf[0] == 't' || buf[0] == 'T');
+    fight = (buf[0] == 'f' || buf[0] == 'F');
     chase = !hide && (buf[0] != 's' && buf[0] != 'S');
     strcpy(buf, "0");
     if (!msg_input("Random seed (0 = don't fix)? ", buf, 12)) return;
@@ -1909,7 +1912,11 @@ static void _wiz_ai_kite(void)
         if ((py != start_y || px != start_x) && cave_empty_bold(start_y, start_x))
             move_player_effect(start_y, start_x, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
         /* Start every trial fresh: no slow, blindness, drained stats, ...
-         * and recompute speed etc. even if nothing needed curing */
+         * and recompute speed etc. even if nothing needed curing. Kills in
+         * fight mode must not level the player up between trials. */
+        p_ptr->exp = exp0;
+        p_ptr->max_exp = max_exp0;
+        check_experience();
         do_cmd_wiz_cure_all();
         p_ptr->update |= PU_BONUS | PU_HP | PU_MANA;
         handle_stuff();
@@ -1921,6 +1928,7 @@ static void _wiz_ai_kite(void)
             continue;
         }
         mon_ai_stats.m_idx = m_idx;
+        m_list[m_idx].nickname = kite_tag; /* detect the slot being reused after a kill */
         player_energy = 0;
 
         /* Hide test: break contact with a medium-range teleport, then wait.
@@ -1937,7 +1945,16 @@ static void _wiz_ai_kite(void)
             game_turn++;
             process_monsters();
             p_ptr->chp = p_ptr->mhp;
-            if (!m_list[m_idx].r_idx || p_ptr->leaving || p_ptr->is_dead) break;
+            if (!m_list[m_idx].r_idx || m_list[m_idx].nickname != kite_tag)
+            {
+                if (fight)
+                {
+                    kills++;
+                    kill_turns += t;
+                }
+                break;
+            }
+            if (p_ptr->leaving || p_ptr->is_dead) break;
             if (hide && m_list[m_idx].cdis <= 1)
             {
                 found++;
@@ -1952,7 +1969,11 @@ static void _wiz_ai_kite(void)
                 player_energy += 100;
                 player_turns++;
                 if (m_list[m_idx].cdis <= 1)
+                {
                     player_adjacent++;  /* a melee chance for the player */
+                    if (fight)
+                        py_attack(m_list[m_idx].fy, m_list[m_idx].fx, 0);
+                }
                 else if (chase)
                     _wiz_player_chase_step(m_idx);
             }
@@ -1964,6 +1985,9 @@ static void _wiz_ai_kite(void)
     s = mon_ai_stats;
     WIPE(&mon_ai_stats, mon_ai_stats_t);
     do_cmd_wiz_zap_all();
+    p_ptr->exp = exp0;
+    p_ptr->max_exp = max_exp0;
+    check_experience();
     do_cmd_wiz_cure_all();
     p_ptr->update |= PU_BONUS | PU_HP | PU_MANA;
     handle_stuff();
@@ -1988,10 +2012,16 @@ static void _wiz_ai_kite(void)
 
     doc = doc_alloc(80);
     doc_printf(doc, "<color:G>AI Kite Test:</color> <color:y>%s</color> vs you (%s, speed %+d)\n\n",
-        r_name + r_info[r_idx].name, hide ? "hiding" : (chase ? "chasing" : "standing still"), test_speed - 110);
+        r_name + r_info[r_idx].name, hide ? "hiding" : (fight ? "fighting" : (chase ? "chasing" : "standing still")), test_speed - 110);
     doc_printf(doc, "%d trials x %d game turns", trials - fails, turns);
     if (fails) doc_printf(doc, " (%d could not be set up)", fails);
     doc_newline(doc);
+    if (fight && trials - fails > 0)
+    {
+        doc_printf(doc, "You killed it in <color:R>%d%%</color> of trials", kills * 100 / (trials - fails));
+        if (kills) doc_printf(doc, ", after <color:R>%d</color> game turns on average", kill_turns / kills);
+        doc_newline(doc);
+    }
     if (hide && trials - fails > 0)
     {
         doc_printf(doc, "Found you in <color:R>%d%%</color> of trials", found * 100 / (trials - fails));
