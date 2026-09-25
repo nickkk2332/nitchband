@@ -1845,7 +1845,9 @@ static void _wiz_ai_kite(void)
     int     r_idx, trials, turns, i, t, k;
     int     player_turns = 0, player_adjacent = 0, fails = 0, player_energy;
     int     test_speed = p_ptr->pspeed;
-    bool    chase;
+    int     found = 0;
+    s32b    find_turns = 0;
+    bool    chase, hide;
     char    buf[81];
     int     start_y = py, start_x = px;
     s32b    old_game_turn = game_turn;
@@ -1876,8 +1878,9 @@ static void _wiz_ai_kite(void)
     if (turns < 10) turns = 10;
     if (turns > 20000) turns = 20000;
     strcpy(buf, "c");
-    if (!msg_input("Player (c)hases or (s)tands still? ", buf, 2)) return;
-    chase = (buf[0] != 's' && buf[0] != 'S');
+    if (!msg_input("Player (c)hases, (s)tands still, or (t)eleports away and hides? ", buf, 2)) return;
+    hide = (buf[0] == 't' || buf[0] == 'T');
+    chase = !hide && (buf[0] != 's' && buf[0] != 'S');
     strcpy(buf, "0");
     if (!msg_input("Random seed (0 = don't fix)? ", buf, 12)) return;
     seed = strtoul(buf, NULL, 10);
@@ -1920,12 +1923,25 @@ static void _wiz_ai_kite(void)
         mon_ai_stats.m_idx = m_idx;
         player_energy = 0;
 
+        /* Hide test: break contact with a medium-range teleport, then wait */
+        if (hide)
+        {
+            teleport_player(30, TELEPORT_PASSIVE);
+            handle_stuff();
+        }
+
         for (t = 0; t < turns; t++)
         {
             game_turn++;
             process_monsters();
             p_ptr->chp = p_ptr->mhp;
             if (!m_list[m_idx].r_idx || p_ptr->leaving || p_ptr->is_dead) break;
+            if (hide && m_list[m_idx].cdis <= 1)
+            {
+                found++;
+                find_turns += t;
+                break;
+            }
 
             /* The scripted player acts at its real speed */
             player_energy -= SPEED_TO_ENERGY(p_ptr->pspeed);
@@ -1970,10 +1986,16 @@ static void _wiz_ai_kite(void)
 
     doc = doc_alloc(80);
     doc_printf(doc, "<color:G>AI Kite Test:</color> <color:y>%s</color> vs you (%s, speed %+d)\n\n",
-        r_name + r_info[r_idx].name, chase ? "chasing" : "standing still", test_speed - 110);
+        r_name + r_info[r_idx].name, hide ? "hiding" : (chase ? "chasing" : "standing still"), test_speed - 110);
     doc_printf(doc, "%d trials x %d game turns", trials - fails, turns);
     if (fails) doc_printf(doc, " (%d could not be set up)", fails);
     doc_newline(doc);
+    if (hide && trials - fails > 0)
+    {
+        doc_printf(doc, "Found you in <color:R>%d%%</color> of trials", found * 100 / (trials - fails));
+        if (found) doc_printf(doc, ", after <color:R>%d</color> game turns on average", find_turns / found);
+        doc_newline(doc);
+    }
     if (s.turns)
     {
         int per = s.turns;
