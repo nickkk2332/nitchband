@@ -164,6 +164,29 @@ extern int  mon_ai_squad_plan(mon_ptr mon);
 extern cptr mon_ai_role_name(int role);
 extern cptr mon_ai_plan_name(int plan);
 
+/* Archetypes and traits: how a race fights, from the race file's T: line
+ * (e.g. "T:ARTILLERY | COWARDLY"). Races without one are inferred from
+ * their flags: frail spellcasters are artillery, everything else a brute,
+ * which is exactly the behaviour before archetypes existed. */
+enum {
+    MAI_A_NONE = 0,     /* no T: line: infer */
+    MAI_A_BRUTE,        /* closes in and fights */
+    MAI_A_SKIRMISHER,   /* fast hit-and-run */
+    MAI_A_ARTILLERY,    /* keeps its distance and shoots */
+    MAI_A_SUPPORT,      /* heals and buffs its allies */
+    MAI_A_AMBUSHER,     /* lies in wait out of sight */
+    MAI_A_GUARDIAN,     /* stays near its post */
+    MAI_A_TRICKSTER,    /* blinks, confuses and teleports */
+    MAI_A_BERSERKER,    /* never backs off */
+    MAI_A_MAX
+};
+#define MAI_T_COWARDLY  0x0001  /* loses heart quickly, retreats early */
+#define MAI_T_BRAVE     0x0002  /* hard to shake */
+extern int  mon_ai_archetype(monster_race *r_ptr);
+extern cptr mon_ai_archetype_name(int arch);
+extern bool mon_ai_race_kites(monster_race *r_ptr);
+extern errr mon_ai_parse_tactics(monster_race *r_ptr, char *buf);
+
 /* Player actions make noise; monsters hear a loud player from farther */
 #define MAI_NOISE_MELEE   6
 #define MAI_NOISE_MISSILE 4

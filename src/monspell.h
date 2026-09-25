@@ -91,6 +91,7 @@ typedef struct {
     s16b             lore;
     byte             prob;
     byte             flags;
+    byte             weight; /* race file BR_FIRE@40; 0 = the spell type's default */
 } mon_spell_t, *mon_spell_ptr;
 
 extern errr mon_spell_parse(mon_spell_ptr spell, int rlev, char *token);

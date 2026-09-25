@@ -29,6 +29,71 @@ cptr mon_ai_kind_name(int kind)
     return "?";
 }
 
+/*************************************************************************
+ * Archetypes
+ ************************************************************************/
+static cptr _arch_names[MAI_A_MAX] = {
+    "NONE", "BRUTE", "SKIRMISHER", "ARTILLERY", "SUPPORT", "AMBUSHER",
+    "GUARDIAN", "TRICKSTER", "BERSERKER",
+};
+
+cptr mon_ai_archetype_name(int arch)
+{
+    static cptr pretty[MAI_A_MAX] = {
+        "None", "Brute", "Skirmisher", "Artillery", "Support", "Ambusher",
+        "Guardian", "Trickster", "Berserker",
+    };
+    if (arch < 0 || arch >= MAI_A_MAX) return "?";
+    return pretty[arch];
+}
+
+int mon_ai_archetype(monster_race *r_ptr)
+{
+    if (r_ptr->ai_arch) return r_ptr->ai_arch;
+    if (mon_race_weak_melee(r_ptr) && mon_race_has_attack_spell(r_ptr))
+        return MAI_A_ARTILLERY;
+    return MAI_A_BRUTE;
+}
+
+/* Does the race back off to cast rather than trade blows? */
+bool mon_ai_race_kites(monster_race *r_ptr)
+{
+    if (!mon_race_has_attack_spell(r_ptr)) return FALSE;
+    switch (mon_ai_archetype(r_ptr))
+    {
+    case MAI_A_ARTILLERY:
+        return TRUE;
+    case MAI_A_SUPPORT:
+    case MAI_A_TRICKSTER:
+        return mon_race_weak_melee(r_ptr);
+    }
+    return FALSE;
+}
+
+errr mon_ai_parse_tactics(monster_race *r_ptr, char *buf)
+{
+    char *tokens[10];
+    int   token_ct = z_string_split(buf, tokens, 10, "|");
+    int   i, j;
+
+    for (i = 0; i < token_ct; i++)
+    {
+        char *token = tokens[i];
+        if (!strlen(token)) continue;
+        if (streq(token, "COWARDLY")) { r_ptr->ai_traits |= MAI_T_COWARDLY; continue; }
+        if (streq(token, "BRAVE")) { r_ptr->ai_traits |= MAI_T_BRAVE; continue; }
+        for (j = 1; j < MAI_A_MAX; j++)
+            if (streq(token, _arch_names[j])) break;
+        if (j == MAI_A_MAX || r_ptr->ai_arch)
+        {
+            msg_format("Error: Unknown or second archetype %s.", token);
+            return PARSE_ERROR_INVALID_FLAG;
+        }
+        r_ptr->ai_arch = j;
+    }
+    return 0;
+}
+
 static mon_ai_option_ptr _add_option(mon_ai_decision_ptr d, int kind, cptr why, int score)
 {
     mon_ai_option_ptr opt;
@@ -146,7 +211,7 @@ int mon_ai_step_away_dir(mon_ptr mon)
     if (mon->id == p_ptr->riding) return 0;
     if (r_ptr->flags1 & RF1_NEVER_MOVE) return 0;
     if (MON_CONFUSED(mon) || MON_MONFEAR(mon) || MON_CSLEEP(mon)) return 0;
-    if (!mon_race_weak_melee(r_ptr) || !mon_race_has_attack_spell(r_ptr)) return 0;
+    if (!mon_ai_race_kites(r_ptr)) return 0;
 
     /* A clearly faster player just follows and gets free hits: stepping back
      * only helps a monster that can keep up. (It may still blink.) */
@@ -187,7 +252,7 @@ static bool _hold_ok(mon_ptr mon)
     if (!is_hostile(mon) || !is_aware(mon)) return FALSE;
     if (mon->id == p_ptr->riding) return FALSE;
     if (MON_CONFUSED(mon) || MON_MONFEAR(mon) || MON_CSLEEP(mon)) return FALSE;
-    if (!mon_race_weak_melee(r_ptr) || !mon_race_has_attack_spell(r_ptr)) return FALSE;
+    if (!mon_ai_race_kites(r_ptr)) return FALSE;
     if (!projectable(mon->fy, mon->fx, py, px)) return FALSE;
     return TRUE;
 }
@@ -870,9 +935,10 @@ int mon_ai_role(mon_ptr mon)
     if (pack->leader_idx == mon->id) return MAI_R_LEADER;
     if (!mon->ai_role)
     {
-        if (mon_race_has_healing(r_ptr))
+        int arch = mon_ai_archetype(r_ptr);
+        if (arch == MAI_A_SUPPORT || mon_race_has_healing(r_ptr))
             mon->ai_role = MAI_R_SUPPORT;
-        else if (mon_race_weak_melee(r_ptr) && mon_race_has_attack_spell(r_ptr))
+        else if (arch == MAI_A_ARTILLERY)
             mon->ai_role = MAI_R_ARTILLERY;
         else if (mon->id % 3 == 0)
             mon->ai_role = MAI_R_FLANKER;

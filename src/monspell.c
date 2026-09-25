@@ -1284,7 +1284,24 @@ void mon_spells_add(mon_spells_ptr spells, mon_spell_ptr spell)
 errr mon_spells_parse(mon_spells_ptr spells, int rlev, char *token)
 {
     mon_spell_t spell = {{0}};
-    errr        rc = mon_spell_parse(&spell, rlev, token);
+    char       *at = strrchr(token, '@');
+    int         weight = 0;
+    errr        rc;
+
+    /* BR_FIRE@40: a race-specific weight replacing the spell type's default
+     * weight in the spell AI (see _ai_init) */
+    if (at)
+    {
+        *at = '\0';
+        weight = atoi(at + 1);
+        if (weight < 1 || weight > 250)
+        {
+            msg_format("Error: Bad spell weight %s.", at + 1);
+            return PARSE_ERROR_GENERIC;
+        }
+    }
+    rc = mon_spell_parse(&spell, rlev, token);
+    spell.weight = weight;
 
     if (rc == 0)
     {
@@ -3573,7 +3590,7 @@ static void _ai_init(mon_spells_ptr spells)
         for (j = 0; j < group->count; j++)
         {
             mon_spell_ptr spell = &group->spells[j];
-            spell->prob = mp->prob;
+            spell->prob = spell->weight ? spell->weight : mp->prob;
         }
     }
 }

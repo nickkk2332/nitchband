@@ -503,6 +503,9 @@ struct monster_race
     s16b weight;
     byte drop_theme;
 
+    byte ai_arch;             /* MAI_A_* from the T: line (0 = infer from flags) */
+    u16b ai_traits;           /* MAI_T_* from the T: line */
+
     mon_spells_ptr spells;
     u32b flags1;              /* Flags 1 (general) */
     u32b flags2;              /* Flags 2 (abilities) */
