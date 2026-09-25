@@ -1405,6 +1405,7 @@ static bool _can_cast(mon_ptr mon)
     if (!is_hostile(mon)) return FALSE;
     if (mon->mflag & MFLAG_NICE) return FALSE;
     if (!is_aware(mon)) return FALSE;
+    if (!mon_ai_has_contact(mon)) return FALSE; /* lost track of the player */
     if (!p_ptr->playing || p_ptr->is_dead) return FALSE;
     if (p_ptr->leaving) return FALSE;
 
@@ -3645,12 +3646,22 @@ static bool _have_smart_flag(u32b flags, int which)
     return BOOL(flags & (1U << which));
 }
 
+/* Whose beliefs _smart_tweak_* consult (NULL: the live values) */
+static mon_ptr _believer = NULL;
+
+static int _believed_res_pct(int res)
+{
+    if (_believer && 0 <= res && res < RES_MAX && _believer->res_seen[res])
+        return _believer->res_seen[res] - 200;
+    return res_pct(res);
+}
+
 static void _smart_tweak_res_dam(mon_spell_ptr spell, int res, u32b flags)
 {
     int pct, tweak = 100;
     if (res == RES_INVALID) return;
     if (!_have_smart_flag(flags, res)) return;
-    pct = res_pct(res);
+    pct = _believed_res_pct(res);
     if (!pct) return;
     if (pct == 100) tweak = 0;
     else if (res_is_high(res) && pct > 30) tweak = 100 - pct/2;
@@ -3662,7 +3673,7 @@ static void _smart_tweak_res_sav(mon_spell_ptr spell, int res, u32b flags)
     int pct, tweak = 100, need;
     if (res == RES_INVALID) return;
     if (!_have_smart_flag(flags, res)) return;
-    pct = res_pct(res);
+    pct = _believed_res_pct(res);
     if ((res == RES_TELEPORT) && (p_ptr->anti_tele)) pct = 100;
     if (!pct) return;
     need = res_is_high(res) ? 33 : 55;
@@ -3753,6 +3764,7 @@ static void _smart_remove(mon_spell_cast_ptr cast)
     u32b           flags = cast->mon->smart;
 
     if (smart_cheat) flags = 0xFFFFFFFF;
+    _believer = smart_cheat ? NULL : cast->mon;
     _smart_remove_aux(spells->groups[MST_BREATH], flags);
     _smart_remove_aux(spells->groups[MST_BALL], flags);
     if (_have_smart_flag(flags, SM_REFLECTION) && p_ptr->reflect)
@@ -3762,6 +3774,7 @@ static void _smart_remove(mon_spell_cast_ptr cast)
     _smart_remove_aux(spells->groups[MST_BEAM], flags);
     _smart_remove_annoy(spells->groups[MST_ANNOY], flags);    
     _smart_remove_escape(spells->groups[MST_ESCAPE], flags);    
+    _believer = NULL;
 }
 
 /* Like clean_shot(), but judged from the caster's point of view: a bolt
@@ -6020,6 +6033,21 @@ void mon_ai_wizard(mon_ptr mon, doc_ptr doc)
         mon_ai_will_run(mon->id) ? " <color:o>Running</color>" : "",
         (!MON_CSLEEP(mon) && !MON_CONFUSED(mon) && !MON_STUNNED(mon) && !MON_MONFEAR(mon)) ? " Normal" : "");
 
+    if (is_hostile(mon))
+    {
+        cave_type *c_ptr = &cave[mon->fy][mon->fx];
+        doc_printf(doc, "Perception: <color:B>%s</color>, contact: %s, hears you within %d steps (you are %s)\n",
+            mon_ai_state_name(mon->ai_state), mon_ai_contact_name(mon->ai_contact),
+            mon_ai_hearing_range(mon), c_ptr->dist ? format("%d steps away", c_ptr->dist) : "out of earshot");
+        if (mon->lk_turn)
+        {
+            doc_printf(doc, "Last knew where you were %d game turns ago, at (%d,%d)%s\n",
+                game_turn - mon->lk_turn, mon->lk_x, mon->lk_y,
+                (mon->lk_y == py && mon->lk_x == px) ? " (correct)" : "");
+        }
+        if (mon->ai_state == MAI_S_SEARCHING)
+            doc_printf(doc, "Searching for %d more turns\n", mon->ai_timer);
+    }
     doc_printf(doc, "Melee: ~%d dam/turn%s\n", mon_race_avg_melee_dam(race),
         mon_race_weak_melee(race) ? " <color:o>(frail in melee)</color>" : "");
     doc_printf(doc, "Anger %d  Mana %d", mon->anger, mon->mana);
@@ -6049,7 +6077,13 @@ void mon_ai_wizard(mon_ptr mon, doc_ptr doc)
     doc_insert(doc, "Knows about player:");
     if (!mon->smart) doc_insert(doc, " nothing");
     for (i = 0; i < RES_MAX; i++)
-        if (mon->smart & (1U << i)) doc_printf(doc, " %s", res_name(i));
+    {
+        if (!(mon->smart & (1U << i))) continue;
+        if (mon->res_seen[i])
+            doc_printf(doc, " %s(%d%%)", res_name(i), mon->res_seen[i] - 200);
+        else
+            doc_printf(doc, " %s", res_name(i));
+    }
     if (mon->smart & (1U << SM_REFLECTION)) doc_insert(doc, " Reflection");
     if (mon->smart & (1U << SM_FREE_ACTION)) doc_insert(doc, " Free-Action");
     doc_newline(doc);
@@ -6122,6 +6156,7 @@ void mon_ai_wizard_summary(doc_ptr doc)
     qsort(idx, ct, sizeof(int), _ai_dist_cmp);
 
     doc_insert(doc, "<style:table><color:G>Name<tab:28>Dist<tab:34>HP%<tab:40>Side<tab:50>Pack AI<tab:66>Cast%<tab:73>Top choice</color>\n");
+    doc_insert(doc, "<color:D>(Side shows perception for hostile monsters: Hunt, Track, Search, Idle)</color>\n");
     for (i = 0; i < ct; i++)
     {
         mon_ptr       mon = &m_list[idx[i]];
@@ -6133,7 +6168,10 @@ void mon_ai_wizard_summary(doc_ptr doc)
         monster_desc(name, mon, MD_IGNORE_HALLU | MD_INDEF_VISIBLE);
         doc_printf(doc, "%-27.27s<tab:28>%d<tab:34>%d<tab:40>%s<tab:50>%s",
             name, mon->cdis, mon->hp * 100 / MAX(1, mon->maxhp),
-            is_pet(mon) ? "Pet" : (is_hostile(mon) ? "Hostile" : "Friendly"),
+            is_pet(mon) ? "Pet" : (!is_hostile(mon) ? "Friendly" :
+                (mon->ai_state == MAI_S_TRACKING ? "Track" :
+                 mon->ai_state == MAI_S_SEARCHING ? "Search" :
+                 mon->ai_state == MAI_S_IDLE ? "Idle" : "Hunt")),
             pack ? _pack_ai_name(pack->ai) : "-");
         if (mon_ai_will_run(mon->id)) doc_insert(doc, "<color:o>*</color>");
         doc_printf(doc, "<tab:66>%d", mon_ai_cast_score(mon));

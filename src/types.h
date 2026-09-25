@@ -760,6 +760,18 @@ struct monster_type
     byte last_spell_type;
     s16b last_spell_effect;
 
+    /* Perception (mon_ai.c; not saved, recomputed after loading) */
+    byte ai_state;        /* MAI_S_*: hunting, tracking, searching, idle */
+    byte ai_contact;      /* MAI_C_*: how the player is perceived this turn */
+    byte ai_timer;        /* turns left to search */
+    byte lk_y, lk_x;      /* where the player was last known to be */
+    s32b lk_turn;         /* ... and when */
+
+    /* What the monster believes about the player's resistances: the
+     * percentage it last observed, stored +200 (0 = never observed, so fall
+     * back to the live value). Not saved. */
+    s16b res_seen[RES_MAX];
+
     s32b pexp;    /* player experience gained (x100). kept <= r_ptr->mexp */
 };
 
@@ -783,6 +795,8 @@ typedef struct {
     s16b guard_y;
     s16b distance;
     s16b next_idx;        /* Free list */
+    byte lk_y, lk_x;      /* last player position any member perceived (not saved) */
+    s32b lk_turn;
 } pack_info_t;
 
 

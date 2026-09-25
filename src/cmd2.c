@@ -1896,6 +1896,7 @@ static bool do_cmd_bash_aux(int y, int x, int dir)
 
     /* Take a turn */
     energy_use = 100;
+    mon_ai_player_noise(MAI_NOISE_BASH);
 
     /* Message */
     msg_format("You smash into the %s!", name);
@@ -2846,6 +2847,8 @@ bool do_cmd_fire_aux1(obj_ptr bow, obj_ptr arrows)
 {
     int dir;
     int tdis, tx, ty;
+
+    mon_ai_player_noise(MAI_NOISE_MISSILE);
 
     tdis = bow_range(bow);
     project_length = tdis + 1;

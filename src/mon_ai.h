@@ -69,6 +69,51 @@ extern int  mon_ai_step_away_dir(mon_ptr mon);
 /* Describe a decision (options, odds and score terms) for the inspector. */
 extern void mon_ai_doc(mon_ai_decision_ptr d, doc_ptr doc);
 
+/* Perception.
+ *
+ * Awake hostile monsters no longer always know where the player is. Each
+ * turn mon_ai_perceive() decides whether the monster has contact (adjacent,
+ * line of sight, hearing within a stealth-dependent range, or scent for
+ * animals). With contact it hunts as before; without, it heads for the
+ * player's last known position, searches around it for a while, and then
+ * idles. Pack members share what they perceive. */
+enum {
+    MAI_S_UNSET = 0,    /* not evaluated yet (new, just woken, or loaded) */
+    MAI_S_HUNTING,      /* has contact now */
+    MAI_S_TRACKING,     /* heading for the last known position */
+    MAI_S_SEARCHING,    /* looking around the last known position */
+    MAI_S_IDLE,         /* gave up */
+    MAI_S_MAX
+};
+enum {
+    MAI_C_NONE = 0,
+    MAI_C_ADJACENT,
+    MAI_C_SIGHT,
+    MAI_C_HEARING,
+    MAI_C_SCENT,
+    MAI_C_MAX
+};
+
+extern void mon_ai_perceive(mon_ptr mon);
+extern bool mon_ai_has_contact(mon_ptr mon);
+extern int  mon_ai_hearing_range(mon_ptr mon);
+extern cptr mon_ai_state_name(int state);
+extern cptr mon_ai_contact_name(int contact);
+
+/* Movement for a hostile monster without contact. Fills mm[] and returns
+ * TRUE, or returns FALSE if the monster should stay where it is. */
+extern bool mon_ai_track_moves(mon_ptr mon, int *mm);
+
+/* The monster learns where the player is (woken up, hurt by the player) */
+extern void mon_ai_alert(mon_ptr mon);
+
+/* Player actions make noise; monsters hear a loud player from farther */
+#define MAI_NOISE_MELEE   6
+#define MAI_NOISE_MISSILE 4
+#define MAI_NOISE_SPELL   8
+#define MAI_NOISE_BASH    10
+extern void mon_ai_player_noise(int loudness);
+
 /* Behaviour counters for one monster, filled in while mon_ai_stats.m_idx
  * names it (the ^A K wizard harness). */
 typedef struct {

@@ -48,7 +48,6 @@ static void _term(mon_ai_option_ptr opt, cptr why, int score)
  * point-blank frailty and stun. */
 static void _score_cast(mon_ptr mon, mon_ai_option_ptr opt)
 {
-    monster_race *r_ptr = &r_info[mon->r_idx];
     pack_info_t  *pack_ptr = pack_info_ptr(mon->id);
     int           freq = opt->score;
 
@@ -291,4 +290,288 @@ void mon_ai_doc(mon_ai_decision_ptr d, doc_ptr doc)
                 doc_printf(doc, "<tab:6><color:D>%-30.30s %+3d -> %d</color>\n", t->name, t->value - opt->terms[j-1].value, t->value);
         }
     }
+}
+
+/*************************************************************************
+ * Perception
+ ************************************************************************/
+static s32b _noise_turn = -1000;
+static int  _noise_level = 0;
+
+cptr mon_ai_state_name(int state)
+{
+    switch (state)
+    {
+    case MAI_S_UNSET: return "Unset";
+    case MAI_S_HUNTING: return "Hunting";
+    case MAI_S_TRACKING: return "Tracking";
+    case MAI_S_SEARCHING: return "Searching";
+    case MAI_S_IDLE: return "Idle";
+    }
+    return "?";
+}
+
+cptr mon_ai_contact_name(int contact)
+{
+    switch (contact)
+    {
+    case MAI_C_NONE: return "none";
+    case MAI_C_ADJACENT: return "adjacent";
+    case MAI_C_SIGHT: return "sight";
+    case MAI_C_HEARING: return "hearing";
+    case MAI_C_SCENT: return "scent";
+    }
+    return "?";
+}
+
+/* A noisy action is heard for about two player turns */
+void mon_ai_player_noise(int loudness)
+{
+    if (game_turn - _noise_turn > 20 || loudness > _noise_level)
+        _noise_level = loudness;
+    _noise_turn = game_turn;
+}
+
+static int _noise_bonus(void)
+{
+    if (game_turn - _noise_turn <= 20) return _noise_level;
+    return 0;
+}
+
+/* How many steps away (along the flow map, i.e. by walkable path) the
+ * monster can hear the player: its alertness radius minus the player's
+ * stealth, plus any noise the player just made. */
+int mon_ai_hearing_range(mon_ptr mon)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+    int           range = r_ptr->aaf - p_ptr->skills.stl + _noise_bonus();
+    if (r_ptr->flags2 & RF2_SMART) range += 2;
+    if (range < 2) range = 2;
+    return range;
+}
+
+static int _contact(mon_ptr mon)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+    cave_type    *c_ptr = &cave[mon->fy][mon->fx];
+
+    if (mon->cdis <= 1) return MAI_C_ADJACENT;
+    if (mon->cdis <= MAX_SIGHT && los(mon->fy, mon->fx, py, px)) return MAI_C_SIGHT;
+    if (c_ptr->dist && c_ptr->dist <= mon_ai_hearing_range(mon)) return MAI_C_HEARING;
+    if ( (r_ptr->flags3 & RF3_ANIMAL)
+      && c_ptr->when
+      && cave[py][px].when - c_ptr->when < 60 )
+    {
+        return MAI_C_SCENT;
+    }
+    return MAI_C_NONE;
+}
+
+static void _know_player(mon_ptr mon)
+{
+    mon->lk_y = py;
+    mon->lk_x = px;
+    mon->lk_turn = game_turn;
+}
+
+void mon_ai_alert(mon_ptr mon)
+{
+    if (!is_hostile(mon)) return;
+    _know_player(mon);
+    if (mon->ai_state != MAI_S_HUNTING)
+        mon->ai_state = MAI_S_TRACKING;
+}
+
+bool mon_ai_has_contact(mon_ptr mon)
+{
+    if (!is_hostile(mon)) return TRUE;           /* pets and friends: unchanged */
+    if (mon->ai_state == MAI_S_UNSET) return TRUE; /* not evaluated yet */
+    return mon->ai_contact != MAI_C_NONE;
+}
+
+void mon_ai_perceive(mon_ptr mon)
+{
+    pack_info_t *pack = pack_info_ptr(mon->id);
+    int          c;
+
+    if (!is_hostile(mon)) return;
+
+    c = _contact(mon);
+    mon->ai_contact = c;
+    if (c)
+    {
+        _know_player(mon);
+        mon->ai_state = MAI_S_HUNTING;
+        if (pack)
+        {
+            /* Shouts, howls, signals: the pack shares what it perceives */
+            pack->lk_y = py;
+            pack->lk_x = px;
+            pack->lk_turn = game_turn;
+        }
+        return;
+    }
+
+    /* No contact. A newly woken, loaded or placed monster knew roughly
+     * where the player was. */
+    if (mon->ai_state == MAI_S_UNSET)
+    {
+        _know_player(mon);
+        mon->ai_state = MAI_S_TRACKING;
+    }
+    else if (mon->ai_state == MAI_S_HUNTING)
+        mon->ai_state = MAI_S_TRACKING;
+
+    /* A packmate knows something newer */
+    if (pack && pack->lk_turn > mon->lk_turn)
+    {
+        mon->lk_y = pack->lk_y;
+        mon->lk_x = pack->lk_x;
+        mon->lk_turn = pack->lk_turn;
+        mon->ai_state = MAI_S_TRACKING;
+    }
+
+    switch (mon->ai_state)
+    {
+    case MAI_S_TRACKING:
+        if (distance(mon->fy, mon->fx, mon->lk_y, mon->lk_x) <= 1)
+        {
+            mon->ai_state = MAI_S_SEARCHING;
+            mon->ai_timer = 20;
+        }
+        break;
+    case MAI_S_SEARCHING:
+        if (mon->ai_timer) mon->ai_timer--;
+        else mon->ai_state = MAI_S_IDLE;
+        break;
+    }
+}
+
+/* Can this monster walk on (y, x), ignoring other monsters? */
+static bool _passable(monster_race *r_ptr, int y, int x)
+{
+    cave_type *c_ptr;
+    if (!in_bounds(y, x)) return FALSE;
+    c_ptr = &cave[y][x];
+    if (is_closed_door(c_ptr->feat))
+        return (r_ptr->flags2 & (RF2_OPEN_DOOR | RF2_BASH_DOOR)) ? TRUE : FALSE;
+    return monster_can_cross_terrain(c_ptr->feat, r_ptr, 0);
+}
+
+/* First step of a shortest walkable path to (ty, tx), searching at most
+ * ~50 steps out. Returns a keypad direction or 0. */
+#define _PATH_MAX_NODES 6000
+static u16b _path_stamp[MAX_HGT][MAX_WID];
+static byte _path_from[MAX_HGT][MAX_WID];  /* ddd index the cell was entered by */
+static u16b _path_gen = 0;
+static byte _path_qy[_PATH_MAX_NODES], _path_qx[_PATH_MAX_NODES];
+
+static int _path_step(mon_ptr mon, int ty, int tx)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+    int           head = 0, tail = 0, d;
+
+    if (++_path_gen == 0)
+    {
+        memset(_path_stamp, 0, sizeof(_path_stamp));
+        _path_gen = 1;
+    }
+    _path_stamp[mon->fy][mon->fx] = _path_gen;
+    _path_qy[tail] = mon->fy;
+    _path_qx[tail++] = mon->fx;
+
+    while (head < tail)
+    {
+        int y = _path_qy[head], x = _path_qx[head++];
+        if (y == ty && x == tx)
+        {
+            /* Walk back to the cell next to the monster */
+            while (1)
+            {
+                int dd = _path_from[y][x];
+                int py2 = y - ddy_ddd[dd], px2 = x - ddx_ddd[dd];
+                if (py2 == mon->fy && px2 == mon->fx) return ddd[dd];
+                y = py2;
+                x = px2;
+            }
+        }
+        if (distance(mon->fy, mon->fx, y, x) > 50) continue;
+        for (d = 0; d < 8; d++)
+        {
+            int ny = y + ddy_ddd[d], nx = x + ddx_ddd[d];
+            if (!in_bounds2(ny, nx)) continue;
+            if (_path_stamp[ny][nx] == _path_gen) continue;
+            if (!(ny == ty && nx == tx) && !_passable(r_ptr, ny, nx)) continue;
+            _path_stamp[ny][nx] = _path_gen;
+            _path_from[ny][nx] = d;
+            if (tail >= _PATH_MAX_NODES) return 0;
+            _path_qy[tail] = ny;
+            _path_qx[tail++] = nx;
+        }
+    }
+    return 0;
+}
+
+/* Step straight at the target (wall-passers, or a clear line) */
+static int _greedy_step(mon_ptr mon, int ty, int tx)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+    int           d, best = 0, best_dist = distance(mon->fy, mon->fx, ty, tx);
+    bool          walls = (r_ptr->flags2 & (RF2_PASS_WALL | RF2_KILL_WALL)) ? TRUE : FALSE;
+
+    for (d = 0; d < 8; d++)
+    {
+        int y = mon->fy + ddy_ddd[d], x = mon->fx + ddx_ddd[d];
+        int dist;
+        if (!in_bounds2(y, x)) continue;
+        if (!walls && !_passable(r_ptr, y, x)) continue;
+        dist = distance(y, x, ty, tx);
+        if (dist < best_dist)
+        {
+            best_dist = dist;
+            best = ddd[d];
+        }
+    }
+    return best;
+}
+
+bool mon_ai_track_moves(mon_ptr mon, int *mm)
+{
+    monster_race *r_ptr = &r_info[mon->r_idx];
+
+    if (mon->ai_state == MAI_S_TRACKING)
+    {
+        int dir;
+        if ( (r_ptr->flags2 & (RF2_PASS_WALL | RF2_KILL_WALL))
+          || los(mon->fy, mon->fx, mon->lk_y, mon->lk_x) )
+        {
+            dir = _greedy_step(mon, mon->lk_y, mon->lk_x);
+        }
+        else
+            dir = _path_step(mon, mon->lk_y, mon->lk_x);
+
+        if (dir)
+        {
+            mm[0] = dir;
+            mm[1] = 0;
+            return TRUE;
+        }
+        /* Can't get there: look around here instead */
+        mon->ai_state = MAI_S_SEARCHING;
+        mon->ai_timer = 20;
+    }
+
+    if (mon->ai_state == MAI_S_SEARCHING)
+    {
+        mm[0] = mm[1] = mm[2] = mm[3] = 5;
+        return TRUE;
+    }
+
+    /* Idle: mostly stay put, sometimes wander */
+    if (one_in_(4))
+    {
+        mm[0] = mm[1] = mm[2] = mm[3] = 5;
+        return TRUE;
+    }
+    return FALSE;
 }

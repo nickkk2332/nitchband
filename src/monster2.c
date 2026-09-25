@@ -5151,6 +5151,24 @@ void update_smart_learn(int m_idx, int what)
     /* Analyze the knowledge */
     assert(0 <= what && what < 32);
     m_ptr->smart |= (1U << what);
+
+    /* Remember what was actually seen, not a live link to the player's gear */
+    if (what < RES_MAX)
+        m_ptr->res_seen[what] = res_pct(what) + 200;
+
+    /* Packmates share what they learn */
+    if (m_ptr->pack_idx)
+    {
+        int i;
+        for (i = 1; i < m_max; i++)
+        {
+            monster_type *mate = &m_list[i];
+            if (i == m_idx || !mate->r_idx || mate->pack_idx != m_ptr->pack_idx) continue;
+            if (r_info[mate->r_idx].flags2 & RF2_STUPID) continue;
+            mate->smart |= (1U << what);
+            if (what < RES_MAX) mate->res_seen[what] = m_ptr->res_seen[what];
+        }
+    }
 }
 
 

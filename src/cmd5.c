@@ -962,6 +962,7 @@ void do_cmd_cast(void)
         value when handling SPELL_CAST.
     */
     energy_use = 100;
+    mon_ai_player_noise(MAI_NOISE_SPELL);
     if (p_ptr->pclass == CLASS_YELLOW_MAGE)
     {
         int delta = p_ptr->lev - vaikeustaso;

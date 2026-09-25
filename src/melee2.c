@@ -2812,6 +2812,9 @@ static void process_monster(int m_idx)
         }
     }
 
+    /* Does the monster know where the player is? (mon_ai.c) */
+    mon_ai_perceive(m_ptr);
+
     /* Try to cast spell occasionally */
     if (r_ptr->spells)
     {
@@ -3030,6 +3033,12 @@ static void process_monster(int m_idx)
         if (!get_enemy_dir(m_idx, mm)/* && !get_moves(m_idx, mm) */)
             mm[0] = mm[1] = mm[2] = mm[3] = 5;
     }
+    /* Lost track of the player: go where it was last known, search, idle */
+    else if (!mon_ai_has_contact(m_ptr) && !MON_MONFEAR(m_ptr))
+    {
+        if (!mon_ai_track_moves(m_ptr, mm)) return;
+    }
+
     /* Normal movement */
     else
     {
@@ -4211,6 +4220,10 @@ bool set_monster_csleep(int m_idx, int v)
 {
     monster_type *m_ptr = &m_list[m_idx];
     bool notice = FALSE;
+
+    /* Waking up: work out where the player is on the next turn */
+    if (!v && MON_CSLEEP(m_ptr))
+        m_ptr->ai_state = MAI_S_UNSET;
 
     v = _bound(v, _range(0, 10000));
     if (v)
