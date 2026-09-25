@@ -395,6 +395,7 @@ void mon_ai_perceive(mon_ptr mon)
     int          c;
 
     if (!is_hostile(mon)) return;
+    if (mon_ai_stats.m_idx == mon->id) mon_ai_stats.states[mon->ai_state]++;
 
     c = _contact(mon);
     mon->ai_contact = c;

@@ -126,6 +126,7 @@ typedef struct {
     int blink_other;        /* blinked the player away */
     int tele_other;         /* teleported the player away */
     int melee;              /* melee attacks on the player */
+    int states[MAI_S_MAX];  /* perception state at the start of its turns */
 } mon_ai_stats_t;
 extern mon_ai_stats_t mon_ai_stats;
 

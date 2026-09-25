@@ -1923,9 +1923,11 @@ static void _wiz_ai_kite(void)
         mon_ai_stats.m_idx = m_idx;
         player_energy = 0;
 
-        /* Hide test: break contact with a medium-range teleport, then wait */
+        /* Hide test: break contact with a medium-range teleport, then wait.
+         * The monster has seen the player first, as it would in play. */
         if (hide)
         {
+            mon_ai_perceive(&m_list[m_idx]);
             teleport_player(30, TELEPORT_PASSIVE);
             handle_stuff();
         }
@@ -2008,6 +2010,9 @@ static void _wiz_ai_kite(void)
         doc_printf(doc, "  Blinked you away       %3d.%d\n", s.blink_other * 100 / per, (s.blink_other * 1000 / per) % 10);
         doc_printf(doc, "  Teleported you away    %3d.%d\n", s.tele_other * 100 / per, (s.tele_other * 1000 / per) % 10);
         doc_printf(doc, "  Melee attacks on you   %3d.%d\n", s.melee * 100 / per, (s.melee * 1000 / per) % 10);
+        doc_insert(doc, "\n<color:G>Perception at the start of its turns:</color>\n");
+        for (k = 1; k < MAI_S_MAX; k++)
+            doc_printf(doc, "  %-26s %3d.%d\n", mon_ai_state_name(k), s.states[k] * 100 / per, (s.states[k] * 1000 / per) % 10);
         doc_insert(doc, "\n<color:G>Turn decisions (spellcasters):</color>\n");
         for (k = 0; k < MAI_KIND_MAX; k++)
             doc_printf(doc, "  %-26s %3d.%d\n", mon_ai_kind_name(k), s.kinds[k] * 100 / per, (s.kinds[k] * 1000 / per) % 10);
