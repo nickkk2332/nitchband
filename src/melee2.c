@@ -2934,8 +2934,9 @@ static void process_monster(int m_idx)
     if (projectable(py, px, m_ptr->fy, m_ptr->fx))
         mon_lore_move(m_ptr);
 
-    /* Frail caster keeping its distance: it waits rather than closing in */
-    if (ai_kind == MAI_HOLD) return;
+    /* Frail caster keeping its distance, or a squad member with no way
+     * through: it waits rather than closing in / jostling */
+    if (ai_kind == MAI_HOLD || ai_kind == MAI_WAIT) return;
 
     /* Shaken and hurt: break off to regroup (unless cornered) */
     if (ai_kind == MAI_RETREAT)
@@ -2948,6 +2949,13 @@ static void process_monster(int m_idx)
     if (ai_kind == MAI_RETREAT)
     {
         /* mm[] already set by mon_ai_retreat_moves */
+    }
+
+    /* Squad flanker going round to the player's far side */
+    else if (ai_kind == MAI_FLANK && decision.step_dir)
+    {
+        mm[0] = decision.step_dir;
+        mm[1] = 0;
     }
 
     /* Frail caster backing out of melee (chosen in mon_ai_decide) */

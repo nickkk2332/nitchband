@@ -6116,6 +6116,8 @@ void mon_ai_wizard(mon_ptr mon, doc_ptr doc)
         if (mon->ai_state == MAI_S_SEARCHING)
             doc_printf(doc, "Searching for %d more turns\n", mon->ai_timer);
     }
+    if (pack_info_ptr(mon->id))
+        doc_printf(doc, "Squad role: <color:B>%s</color>, plan: %s\n", mon_ai_role_name(mon_ai_role(mon)), mon_ai_plan_name(mon_ai_squad_plan(mon)));
     doc_printf(doc, "Morale %d%%, intent: %s", mon_ai_morale(mon), mon_ai_intent_name(mon->intent));
     if (mon->intent == MAI_I_CHARGE && race->spells)
     {

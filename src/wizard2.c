@@ -2137,7 +2137,7 @@ static void _wiz_ai_kite(void)
         doc_printf(doc, "  Teleported you away    %3d.%d\n", s.tele_other * 100 / per, (s.tele_other * 1000 / per) % 10);
         doc_printf(doc, "  Melee attacks on you   %3d.%d\n", s.melee * 100 / per, (s.melee * 1000 / per) % 10);
         doc_printf(doc, "  Charged big spells      %3d (released %d, interrupted %d)\n", s.charges, s.releases, s.interrupts);
-        doc_printf(doc, "  Retreat turns           %3d.%d   Shouts for help %d\n", s.retreats * 100 / per, (s.retreats * 1000 / per) % 10, s.shouts);
+        doc_printf(doc, "  Retreat turns           %3d.%d   Shouts for help %d   Orders barked %d\n", s.retreats * 100 / per, (s.retreats * 1000 / per) % 10, s.shouts, s.barks);
         doc_insert(doc, "\n<color:G>Perception at the start of its turns:</color>\n");
         for (k = 1; k < MAI_S_MAX; k++)
             doc_printf(doc, "  %-26s %3d.%d\n", mon_ai_state_name(k), s.states[k] * 100 / per, (s.states[k] * 1000 / per) % 10);

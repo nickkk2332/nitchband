@@ -779,6 +779,7 @@ struct monster_type
     s16b intent_effect;
     byte morale_lost;     /* morale is 100 - morale_lost (so 0 = steady) */
     byte shouted;         /* already called for help while retreating */
+    byte ai_role;         /* MAI_R_*: role in its pack (0 = not assigned yet) */
 
     s32b pexp;    /* player experience gained (x100). kept <= r_ptr->mexp */
 };
@@ -805,6 +806,8 @@ typedef struct {
     s16b next_idx;        /* Free list */
     byte lk_y, lk_x;      /* last player position any member perceived (not saved) */
     s32b lk_turn;
+    byte plan;            /* squad plan (MAI_P_*, not saved) */
+    s32b plan_turn;       /* player_turn it was worked out on */
 } pack_info_t;
 
 

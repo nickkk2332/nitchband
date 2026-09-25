@@ -21,6 +21,9 @@ cptr mon_ai_kind_name(int kind)
     case MAI_CAST: return "Cast a spell";
     case MAI_STEP_AWAY: return "Step away from the player";
     case MAI_HOLD: return "Hold position at range";
+    case MAI_RETREAT: return "Retreat to regroup";
+    case MAI_FLANK: return "Flank the player";
+    case MAI_WAIT: return "Wait for an opening";
     case MAI_PHYSICAL: return "Move or melee";
     }
     return "?";
@@ -216,6 +219,8 @@ static int _retreat_score(mon_ptr mon)
     return (50 - morale) + (50 - hp_pct);
 }
 
+static int _squad_options(mon_ptr mon, mon_ai_decision_ptr d, int total);
+
 void mon_ai_decide(mon_ptr mon, bool cast_blocked, mon_ai_decision_ptr d)
 {
     monster_race *r_ptr = &r_info[mon->r_idx];
@@ -273,6 +278,7 @@ void mon_ai_decide(mon_ptr mon, bool cast_blocked, mon_ai_decision_ptr d)
             total -= hold->score;
         }
     }
+    total -= _squad_options(mon, d, total);
     _add_option(d, MAI_PHYSICAL, "Whenever not casting", total);
 }
 
@@ -499,6 +505,7 @@ static bool _passable(monster_race *r_ptr, int y, int x)
 {
     cave_type *c_ptr;
     if (!in_bounds(y, x)) return FALSE;
+    if (player_bold(y, x)) return FALSE;
     c_ptr = &cave[y][x];
     if (is_closed_door(c_ptr->feat))
         return (r_ptr->flags2 & (RF2_OPEN_DOOR | RF2_BASH_DOOR)) ? TRUE : FALSE;
@@ -645,12 +652,15 @@ int mon_ai_morale(mon_ptr mon)
     return 100 - mon->morale_lost;
 }
 
+static bool _leader_near(mon_ptr mon);
+
 static void _lose_morale(mon_ptr mon, int amt)
 {
     monster_race *r_ptr = &r_info[mon->r_idx];
     if (amt <= 0) return;
     if (r_ptr->flags3 & RF3_NO_FEAR) return;
     if (r_ptr->flags1 & RF1_UNIQUE) amt /= 2;
+    if (_leader_near(mon)) amt /= 2;  /* a leader in sight steadies the ranks */
     mon->morale_lost = MIN(100, mon->morale_lost + amt);
 }
 
@@ -821,4 +831,189 @@ bool mon_ai_intent_turn(mon_ptr mon)
         }
     }
     return FALSE;
+}
+
+/*************************************************************************
+ * Squads
+ ************************************************************************/
+cptr mon_ai_role_name(int role)
+{
+    switch (role)
+    {
+    case MAI_R_NONE: return "None";
+    case MAI_R_LEADER: return "Leader";
+    case MAI_R_FRONTLINE: return "Frontline";
+    case MAI_R_FLANKER: return "Flanker";
+    case MAI_R_ARTILLERY: return "Artillery";
+    case MAI_R_SUPPORT: return "Support";
+    }
+    return "?";
+}
+
+cptr mon_ai_plan_name(int plan)
+{
+    switch (plan)
+    {
+    case MAI_P_NONE: return "None";
+    case MAI_P_SURROUND: return "Surround";
+    case MAI_P_CHOKE: return "Hold the chokepoint";
+    }
+    return "?";
+}
+
+int mon_ai_role(mon_ptr mon)
+{
+    pack_info_t  *pack = pack_info_ptr(mon->id);
+    monster_race *r_ptr = &r_info[mon->r_idx];
+
+    if (!pack) return MAI_R_NONE;
+    if (pack->leader_idx == mon->id) return MAI_R_LEADER;
+    if (!mon->ai_role)
+    {
+        if (mon_race_has_healing(r_ptr))
+            mon->ai_role = MAI_R_SUPPORT;
+        else if (mon_race_weak_melee(r_ptr) && mon_race_has_attack_spell(r_ptr))
+            mon->ai_role = MAI_R_ARTILLERY;
+        else if (mon->id % 3 == 0)
+            mon->ai_role = MAI_R_FLANKER;
+        else
+            mon->ai_role = MAI_R_FRONTLINE;
+    }
+    return mon->ai_role;
+}
+
+/* Free squares next to the player that a monster could stand on */
+static int _open_around_player(void)
+{
+    int d, ct = 0;
+    for (d = 0; d < 8; d++)
+    {
+        int y = py + ddy_ddd[d], x = px + ddx_ddd[d];
+        if (!in_bounds2(y, x)) continue;
+        if (cave_have_flag_bold(y, x, FF_MOVE)) ct++;
+    }
+    return ct;
+}
+
+int mon_ai_squad_plan(mon_ptr mon)
+{
+    pack_info_t *pack = pack_info_ptr(mon->id);
+    int          plan;
+
+    if (!pack || pack->ai != AI_SEEK || pack->count < 3 || !is_hostile(mon)) return MAI_P_NONE;
+    if (pack->plan_turn == player_turn) return pack->plan;
+
+    plan = (_open_around_player() >= 5) ? MAI_P_SURROUND : MAI_P_CHOKE;
+    if (!mon_ai_has_contact(mon)) plan = pack->plan;  /* keep the plan until someone sees the player */
+
+    /* The leader commits the squad */
+    if (plan != MAI_P_NONE && plan != pack->plan && pack->leader_idx)
+    {
+        mon_ptr leader = &m_list[pack->leader_idx];
+        if (leader->r_idx && mon_ai_has_contact(leader))
+        {
+            if (mon_ai_tracked(leader)) mon_ai_stats.barks++;
+            if (mon_show_msg(leader))
+            {
+                char m_name[MAX_NLEN];
+                monster_desc(m_name, leader, 0);
+                msg_format("%^s barks orders!", m_name);
+            }
+        }
+    }
+    pack->plan = plan;
+    pack->plan_turn = player_turn;
+    return plan;
+}
+
+/* Is a living leader close by and in view? It steadies the ranks. */
+static bool _leader_near(mon_ptr mon)
+{
+    pack_info_t *pack = pack_info_ptr(mon->id);
+    mon_ptr      leader;
+    if (!pack || !pack->leader_idx || pack->leader_idx == mon->id) return FALSE;
+    leader = &m_list[pack->leader_idx];
+    if (!leader->r_idx) return FALSE;
+    if (distance(mon->fy, mon->fx, leader->fy, leader->fx) > 10) return FALSE;
+    return los(mon->fy, mon->fx, leader->fy, leader->fx);
+}
+
+/* Flanker: the free square next to the player farthest from where the
+ * packmates already are, and the first step towards it (0 if none). */
+static int _flank_dir(mon_ptr mon)
+{
+    int i, d, fy = 0, fx = 0, ct = 0, best_d = -1, ty = 0, tx = 0;
+
+    for (i = 1; i < m_max; i++)
+    {
+        mon_ptr mate = &m_list[i];
+        if (i == mon->id || !mate->r_idx || mate->pack_idx != mon->pack_idx) continue;
+        if (mate->cdis > 2) continue;
+        fy += mate->fy;
+        fx += mate->fx;
+        ct++;
+    }
+    if (!ct) return 0;  /* nobody engaging yet: just close in */
+    fy /= ct;
+    fx /= ct;
+
+    for (d = 0; d < 8; d++)
+    {
+        int y = py + ddy_ddd[d], x = px + ddx_ddd[d], dist;
+        if (!in_bounds2(y, x) || cave[y][x].m_idx) continue;
+        if (!_passable(&r_info[mon->r_idx], y, x)) continue;
+        dist = distance(fy, fx, y, x);
+        if (dist > best_d)
+        {
+            best_d = dist;
+            ty = y;
+            tx = x;
+        }
+    }
+    if (best_d < 2) return 0;  /* no square on the far side */
+    if (mon->fy == ty && mon->fx == tx) return 0;
+    return _path_step(mon, ty, tx);
+}
+
+/* Squad options for mon_ai_decide(). Returns the score used. */
+static int _squad_options(mon_ptr mon, mon_ai_decision_ptr d, int total)
+{
+    int plan, role;
+
+    if (total <= 0 || !mon_ai_has_contact(mon) || mon->cdis <= 1) return 0;
+    if (MON_CONFUSED(mon) || MON_MONFEAR(mon)) return 0;
+    if (r_info[mon->r_idx].flags1 & RF1_NEVER_MOVE) return 0;
+    plan = mon_ai_squad_plan(mon);
+    if (plan == MAI_P_NONE) return 0;
+    role = mon_ai_role(mon);
+
+    if (plan == MAI_P_SURROUND && role == MAI_R_FLANKER && mon->cdis <= 8)
+    {
+        int dir = _flank_dir(mon);
+        if (dir)
+        {
+            mon_ai_option_ptr opt = _add_option(d, MAI_FLANK, "Squad: flank the player", 70);
+            if (opt->score > total) _term(opt, "Capped", total);
+            d->step_dir = dir;
+            return opt->score;
+        }
+    }
+    if ( plan == MAI_P_CHOKE
+      && (role == MAI_R_FRONTLINE || role == MAI_R_FLANKER)
+      && mon->cdis <= 4 )
+    {
+        int dd, free_ct = 0;
+        for (dd = 0; dd < 8; dd++)
+        {
+            int y = py + ddy_ddd[dd], x = px + ddx_ddd[dd];
+            if (in_bounds2(y, x) && !cave[y][x].m_idx && cave_have_flag_bold(y, x, FF_MOVE)) free_ct++;
+        }
+        if (!free_ct)
+        {
+            mon_ai_option_ptr opt = _add_option(d, MAI_WAIT, "Squad: no way through, wait", 70);
+            if (opt->score > total) _term(opt, "Capped", total);
+            return opt->score;
+        }
+    }
+    return 0;
 }

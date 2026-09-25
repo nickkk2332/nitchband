@@ -19,6 +19,8 @@ enum {
     MAI_STEP_AWAY,   /* frail caster backs off from the player (one step) */
     MAI_HOLD,        /* frail caster at range keeps its distance (waits) */
     MAI_RETREAT,     /* shaken and hurt: break off and regroup */
+    MAI_FLANK,       /* squad flanker: go around to the player's far side */
+    MAI_WAIT,        /* squad member that can't reach the player: wait, don't jostle */
     MAI_PHYSICAL,    /* everything else: move, melee, breed, pick up, ... */
     MAI_KIND_MAX
 };
@@ -43,7 +45,7 @@ typedef struct {
     int             option_ct;
     mon_ai_option_t options[MAI_MAX_OPTIONS];
     int             choice;  /* index into options; -1 until chosen */
-    int             step_dir; /* keypad direction for MAI_STEP_AWAY */
+    int             step_dir; /* keypad direction for MAI_STEP_AWAY or MAI_FLANK */
 } mon_ai_decision_t, *mon_ai_decision_ptr;
 
 /* Score this turn's options. No random numbers are used. */
@@ -134,6 +136,34 @@ extern void mon_ai_on_hurt(mon_ptr mon, int dam);
 extern void mon_ai_on_disabled(mon_ptr mon);   /* stunned or confused */
 extern void mon_ai_on_ally_death(mon_ptr dead);
 
+/* Squads: packs of 3+ hunting the player (pack AI "Seek") get roles and a
+ * plan worked out once per player turn from the terrain around the player.
+ * - Surround (player in the open): flankers path to the free square next to
+ *   the player farthest from where their packmates are already engaging.
+ * - Chokepoint (player in a corridor): members that can't reach a free
+ *   square next to the player wait instead of jostling.
+ * A living leader steadies nearby members' morale and barks orders when
+ * the squad commits to a plan. */
+enum {
+    MAI_R_NONE = 0,
+    MAI_R_LEADER,
+    MAI_R_FRONTLINE,
+    MAI_R_FLANKER,
+    MAI_R_ARTILLERY,
+    MAI_R_SUPPORT,
+    MAI_R_MAX
+};
+enum {
+    MAI_P_NONE = 0,
+    MAI_P_SURROUND,
+    MAI_P_CHOKE,
+    MAI_P_MAX
+};
+extern int  mon_ai_role(mon_ptr mon);
+extern int  mon_ai_squad_plan(mon_ptr mon);
+extern cptr mon_ai_role_name(int role);
+extern cptr mon_ai_plan_name(int plan);
+
 /* Player actions make noise; monsters hear a loud player from farther */
 #define MAI_NOISE_MELEE   6
 #define MAI_NOISE_MISSILE 4
@@ -160,6 +190,7 @@ typedef struct {
     int interrupts;         /* ... and interrupted */
     int retreats;           /* turns spent retreating */
     int shouts;             /* called for help */
+    int barks;              /* leader barked orders */
 } mon_ai_stats_t;
 extern mon_ai_stats_t mon_ai_stats;
 extern bool mon_ai_tracked(mon_ptr mon);
