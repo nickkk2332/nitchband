@@ -195,6 +195,7 @@ static int _retreat_score(mon_ptr mon)
     if (r_ptr->flags3 & RF3_NO_FEAR) return 0;
     if (MON_MONFEAR(mon) || MON_CONFUSED(mon)) return 0;  /* the old fear code handles that */
     if (mon->intent == MAI_I_REGROUP && hp_pct < 70) return 40;
+    if (mon->shouted) return 0;  /* already broke off once: fights to the end now */
     if (hp_pct >= 50 || morale >= 50) return 0;
     return (50 - morale) + (50 - hp_pct);
 }
@@ -786,11 +787,12 @@ bool mon_ai_intent_turn(mon_ptr mon)
         if (!mon_ai_has_contact(mon))
         {
             if (mon->hp < mon->maxhp)
-                (void)hp_mon(mon, MAX(1, mon->maxhp / 50), FALSE);
+                (void)hp_mon(mon, MAX(1, mon->maxhp / 100), FALSE);
             if (mon->hp * 10 >= mon->maxhp * 7 && mon_ai_morale(mon) >= 60)
             {
+                /* Back to the fight. (shouted stays set: one regroup per
+                 * monster, so a faster monster can't flee-heal forever.) */
                 mon->intent = MAI_I_NONE;
-                mon->shouted = FALSE;
                 mon->ai_state = MAI_S_TRACKING;  /* return to the last known position */
             }
             return FALSE;
