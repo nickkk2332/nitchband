@@ -1361,23 +1361,25 @@ int _avg_spell_dam(mon_ptr mon, mon_spell_ptr spell);
 static bool _projectable(point_t src, point_t dest);
 
 /* Big hits are announced a turn ahead (see mon_ai.c intents): breaths and
- * attack spells whose average damage is at least a quarter of the player's
- * maximum HP. Hounds (packs of weak breathers) are exempt. */
+ * balls averaging at least a quarter of the player's maximum HP, and other
+ * attack spells averaging at least a third. Hounds (packs of weak
+ * breathers) are exempt. */
 static bool _should_charge(mon_spell_cast_ptr cast)
 {
     int dam;
     if (!(cast->flags & MSC_SRC_MONSTER) || !(cast->flags & MSC_DEST_PLAYER)) return FALSE;
     if (!(cast->flags & MSC_DIRECT) || (cast->flags & MSC_SPLASH)) return FALSE;
     if (cast->race->d_char == 'Z') return FALSE;
+    dam = _avg_spell_dam(cast->mon, cast->spell);
+    if (dam < 15) return FALSE;
     switch (cast->spell->id.type)
     {
-    case MST_BREATH: case MST_BALL: case MST_BOLT: case MST_BEAM: case MST_CURSE:
-        break;
-    default:
-        return FALSE;
+    case MST_BREATH: case MST_BALL:
+        return dam * 4 >= p_ptr->mhp;
+    case MST_BOLT: case MST_BEAM: case MST_CURSE:
+        return dam * 3 >= p_ptr->mhp;
     }
-    dam = _avg_spell_dam(cast->mon, cast->spell);
-    return dam >= 15 && dam * 4 >= p_ptr->mhp;
+    return FALSE;
 }
 
 static void _announce_charge(mon_spell_cast_ptr cast)

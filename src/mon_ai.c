@@ -656,8 +656,8 @@ void mon_ai_on_hurt(mon_ptr mon, int dam)
     if (dam <= 0 || !mon->maxhp) return;
     pct = MIN(100, dam * 100 / mon->maxhp);
 
-    /* Being hurt is unnerving: half the share of health lost */
-    _lose_morale(mon, pct / 2);
+    /* Being hurt is unnerving: morale drops by the share of health lost */
+    _lose_morale(mon, pct);
 
     /* A solid hit breaks the concentration of a charging monster */
     if (mon->intent == MAI_I_CHARGE && pct >= 10)
