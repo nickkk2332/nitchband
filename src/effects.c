@@ -6383,7 +6383,7 @@ int take_hit(int damage_type, int damage, cptr hit_from)
     if (p_ptr->sutemi) damage *= 2;
     if (p_ptr->special_defense & KATA_IAI) damage += (damage + 4) / 5;
     if (check_foresight()) return 0;
-    if (statistics_hack) return 0;
+    if (statistics_hack && !wiz_immortal) return 0;  /* the AI harness wants real damage */
 
     if (damage_type != DAMAGE_USELIFE)
     {
@@ -6622,8 +6622,8 @@ int take_hit(int damage_type, int damage, cptr hit_from)
         shuffling_hack_hp = 0;
     }
 
-    /* Hitpoint warning */
-    if (p_ptr->chp < warning && !world_monster)
+    /* Hitpoint warning (not in the AI harness, which runs unattended) */
+    if (p_ptr->chp < warning && !world_monster && !wiz_immortal)
     {
         if ((warning_hack_hp) && (warning_hack_hp < p_ptr->chp))
         {
