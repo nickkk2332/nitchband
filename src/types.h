@@ -503,6 +503,9 @@ struct monster_race
     s16b weight;
     byte drop_theme;
 
+    byte ai_arch;             /* MAI_A_* from the T: line (0 = infer from flags) */
+    u16b ai_traits;           /* MAI_T_* from the T: line */
+
     mon_spells_ptr spells;
     u32b flags1;              /* Flags 1 (general) */
     u32b flags2;              /* Flags 2 (abilities) */
@@ -760,6 +763,31 @@ struct monster_type
     byte last_spell_type;
     s16b last_spell_effect;
 
+    /* Perception (mon_ai.c; not saved, recomputed after loading) */
+    byte ai_state;        /* MAI_S_*: hunting, tracking, searching, idle */
+    byte ai_contact;      /* MAI_C_*: how the player is perceived this turn */
+    byte ai_timer;        /* turns left to search */
+    byte lk_y, lk_x;      /* where the player was last known to be */
+    s32b lk_turn;         /* ... and when */
+
+    /* What the monster believes about the player's resistances: the
+     * percentage it last observed, stored +200 (0 = never observed, so fall
+     * back to the live value). Not saved. */
+    s16b res_seen[RES_MAX];
+
+    /* Intent and morale (mon_ai.c; not saved) */
+    byte intent;          /* MAI_I_*: a multi-turn plan */
+    byte intent_timer;
+    byte intent_type;     /* charged spell (type + 1) */
+    s16b intent_effect;
+    byte morale_lost;     /* morale is 100 - morale_lost (so 0 = steady) */
+    byte shouted;         /* already called for help while retreating */
+    byte ai_role;         /* MAI_R_*: role in its pack (0 = not assigned yet) */
+    byte ai_pers;         /* personality bits (0 = not worked out yet) */
+    byte struck;          /* hit the player in melee on its last turn */
+    byte lurk;            /* turns spent lying in wait (ambushers) */
+    byte home_y, home_x;  /* where it was first active (guardians keep to it) */
+
     s32b pexp;    /* player experience gained (x100). kept <= r_ptr->mexp */
 };
 
@@ -783,6 +811,10 @@ typedef struct {
     s16b guard_y;
     s16b distance;
     s16b next_idx;        /* Free list */
+    byte lk_y, lk_x;      /* last player position any member perceived (not saved) */
+    s32b lk_turn;
+    byte plan;            /* squad plan (MAI_P_*, not saved) */
+    s32b plan_turn;       /* player_turn it was worked out on */
 } pack_info_t;
 
 

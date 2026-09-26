@@ -4259,6 +4259,11 @@ errr parse_r_info(char *buf, header *head)
             r_ptr->spells = mon_spells_alloc();
         return parse_mon_spells(buf + 2, r_ptr);
     }
+    /* T:ARTILLERY | COWARDLY (AI archetype and traits, see mon_ai.h) */
+    else if (buf[0] == 'T')
+    {
+        return mon_ai_parse_tactics(r_ptr, buf + 2);
+    }
     /* O:DROP_WARRIOR */
     else if (buf[0] == 'O')
     {

@@ -21,6 +21,7 @@
    and objects 'o' are also useful. Be sure to begin each statistics run
    with a fresh, newly created character.*/
 bool statistics_hack = FALSE;
+bool wiz_immortal = FALSE; /* take_hit() never kills (AI harness) */
 static vec_ptr _rand_arts = NULL;
 static vec_ptr _egos = NULL;
 
@@ -1788,6 +1789,405 @@ static void _wiz_ai_duel(void)
     do_cmd_redraw();
 }
 
+/*************************************************************************
+ * AI Kite Test
+ *
+ * Measures how one hostile monster behaves against the player: it starts
+ * next to you, and you either stand still or chase it (one step toward it
+ * per player turn at your real speed; you never attack). The player cannot
+ * die during the test (HP is topped up), but other effects of the monster's
+ * attacks are real, so use a throwaway character.
+ ************************************************************************/
+static void _wiz_player_chase_step(int m_idx)
+{
+    monster_type *m_ptr = &m_list[m_idx];
+    int d, best_d = -1, best_dist = distance(py, px, m_ptr->fy, m_ptr->fx);
+
+    for (d = 0; d < 8; d++)
+    {
+        int y = py + ddy_ddd[d], x = px + ddx_ddd[d];
+        int dist;
+        if (!in_bounds(y, x)) continue;
+        if (!cave_empty_bold(y, x)) continue;
+        if (!cave_have_flag_bold(y, x, FF_MOVE)) continue;
+        dist = distance(y, x, m_ptr->fy, m_ptr->fx);
+        if (dist < best_dist)
+        {
+            best_dist = dist;
+            best_d = d;
+        }
+    }
+    if (best_d >= 0)
+        move_player_effect(py + ddy_ddd[best_d], px + ddx_ddd[best_d], MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
+}
+
+/* Group mode: move the player to the nearest square in the open (all 8
+ * neighbours walkable, and theirs too) so squad tactics are tested in a
+ * room rather than against a building */
+static void _wiz_kite_open_ground(void)
+{
+    int y, x, best_d = 999, by = 0, bx = 0;
+    for (y = MAX(2, py - 25); y <= MIN(cur_hgt - 3, py + 25); y++)
+    {
+        for (x = MAX(2, px - 25); x <= MIN(cur_wid - 3, px + 25); x++)
+        {
+            int yy, xx, d = distance(py, px, y, x);
+            bool open = TRUE;
+            if (d >= best_d) continue;
+            for (yy = y - 2; yy <= y + 2 && open; yy++)
+                for (xx = x - 2; xx <= x + 2 && open; xx++)
+                    if (!cave_have_flag_bold(yy, xx, FF_MOVE) || cave[yy][xx].m_idx) open = FALSE;
+            if (!open) continue;
+            best_d = d;
+            by = y;
+            bx = x;
+        }
+    }
+    if (best_d < 999 && (by != py || bx != px))
+        move_player_effect(by, bx, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
+}
+
+/* Group mode: the nearest living member of the tagged group, or 0 */
+static int _wiz_kite_focus(u16b tag, int *alive, int *adjacent, bool *flanked)
+{
+    int i, best = 0, best_d = 999;
+    int ady[8], adx[8], adj = 0, a, b;
+
+    *alive = 0;
+    for (i = 1; i < m_max; i++)
+    {
+        monster_type *m_ptr = &m_list[i];
+        if (!m_ptr->r_idx || m_ptr->nickname != tag) continue;
+        (*alive)++;
+        if (m_ptr->cdis <= 1 && adj < 8)
+        {
+            ady[adj] = m_ptr->fy - py;
+            adx[adj++] = m_ptr->fx - px;
+        }
+        if (m_ptr->cdis < best_d)
+        {
+            best_d = m_ptr->cdis;
+            best = i;
+        }
+    }
+    *adjacent = adj;
+    /* Flanked: two attackers on opposite sides (more than 90 degrees apart) */
+    *flanked = FALSE;
+    for (a = 0; a < adj; a++)
+        for (b = a + 1; b < adj; b++)
+            if (ady[a] * ady[b] + adx[a] * adx[b] < 0) *flanked = TRUE;
+    return best;
+}
+
+/* Group mode: place the race with its friends/escorts 5-8 squares away */
+static int _wiz_kite_place_group(int r_idx, u16b tag)
+{
+    int tries, i;
+    for (tries = 0; tries < 2000; tries++)
+    {
+        int y = py + randint0(17) - 8, x = px + randint0(17) - 8;
+        int d = distance(py, px, y, x), m_idx;
+        if (d < 5 || d > 8) continue;
+        if (!in_bounds(y, x) || !cave_empty_bold(y, x)) continue;
+        if (!place_monster_aux(0, y, x, r_idx, PM_NO_KAGE | PM_NO_PET | PM_ALLOW_GROUP)) continue;
+        m_idx = cave[y][x].m_idx;
+        if (!m_idx) continue;
+        for (i = 1; i < m_max; i++)
+        {
+            monster_type *m_ptr = &m_list[i];
+            if (!m_ptr->r_idx || i == p_ptr->riding) continue;
+            (void)set_monster_csleep(i, 0);
+            m_ptr->mflag &= ~MFLAG_NICE;
+            m_ptr->nickname = tag;
+        }
+        return m_idx;
+    }
+    return 0;
+}
+
+static int _wiz_kite_place(int r_idx)
+{
+    int d, start = randint0(8);
+    for (d = 0; d < 8; d++)
+    {
+        int dir = (start + d) % 8;
+        int y = py + ddy_ddd[dir], x = px + ddx_ddd[dir];
+        int m_idx;
+        if (!in_bounds(y, x) || !cave_empty_bold(y, x)) continue;
+        if (!place_monster_aux(0, y, x, r_idx, PM_NO_KAGE | PM_NO_PET)) continue;
+        m_idx = cave[y][x].m_idx;
+        if (!m_idx) continue;
+        (void)set_monster_csleep(m_idx, 0);
+        m_list[m_idx].mflag &= ~MFLAG_NICE;
+        return m_idx;
+    }
+    return 0;
+}
+
+static void _wiz_ai_kite(void)
+{
+    int     r_idx, trials, turns, i, t, k;
+    int     player_turns = 0, player_adjacent = 0, fails = 0, player_energy;
+    int     test_speed = p_ptr->pspeed;
+    int     found = 0, kills = 0, group_size = 0;
+    s32b    adjacent_sum = 0, flanked_turns = 0;
+    bool    group;
+    s32b    find_turns = 0, kill_turns = 0;
+    s32b    exp0 = p_ptr->exp, max_exp0 = p_ptr->max_exp;
+    bool    chase, hide, fight;
+    char    buf[81];
+    int     start_y = py, start_x = px;
+    int     orig_y = py, orig_x = px;
+    s32b    old_game_turn = game_turn;
+    byte    old_max;
+    u32b    seed = 0, fingerprint = 0;
+    bool    old_rand_quick = FALSE;
+    u32b    old_rand_value = 0;
+    u16b    old_rand_place = 0;
+    u32b    old_rand_state[RAND_DEG];
+    mon_ai_stats_t s;
+    doc_ptr doc;
+    u16b    kite_tag = quark_add("<kite>");
+
+    if (p_ptr->inside_arena || p_ptr->inside_battle || p_ptr->wild_mode || p_ptr->riding)
+    {
+        msg_print("Not here.");
+        return;
+    }
+    r_idx = _wiz_prompt_race("Monster? ");
+    if (!r_idx) return;
+    strcpy(buf, "50");
+    if (!msg_input("Number of trials? ", buf, 10)) return;
+    trials = atoi(buf);
+    if (trials < 1) return;
+    if (trials > 5000) trials = 5000;
+    strcpy(buf, "1000");
+    if (!msg_input("Game turns per trial? ", buf, 10)) return;
+    turns = atoi(buf);
+    if (turns < 10) turns = 10;
+    if (turns > 20000) turns = 20000;
+    strcpy(buf, "c");
+    if (!msg_input("Player (c)hases, (f)ights, (s)tands still, or (t)eleports away and hides? ", buf, 2)) return;
+    hide = (buf[0] == 't' || buf[0] == 'T');
+    fight = (buf[0] == 'f' || buf[0] == 'F');
+    chase = !hide && (buf[0] != 's' && buf[0] != 'S');
+    strcpy(buf, "n");
+    if (!msg_input("Place its whole group, 5-8 squares away? (y/n) ", buf, 2)) return;
+    group = (buf[0] == 'y' || buf[0] == 'Y');
+    strcpy(buf, "0");
+    if (!msg_input("Random seed (0 = don't fix)? ", buf, 12)) return;
+    seed = strtoul(buf, NULL, 10);
+    if (!get_check("This deletes every monster on the level, and the monster's attacks affect you for real (you cannot die). Continue? ")) return;
+
+    if (seed)
+    {
+        old_rand_quick = Rand_quick;
+        old_rand_value = Rand_value;
+        old_rand_place = Rand_place;
+        C_COPY(old_rand_state, Rand_state, RAND_DEG, u32b);
+        Rand_quick = FALSE;
+        Rand_state_init(seed);
+    }
+
+    old_max = r_info[r_idx].max_num;
+    statistics_hack = TRUE;
+    wiz_immortal = TRUE;
+    if (group)
+    {
+        do_cmd_wiz_zap_all();
+        _wiz_kite_open_ground();
+        start_y = py;
+        start_x = px;
+    }
+    WIPE(&mon_ai_stats, mon_ai_stats_t);
+
+    for (i = 0; i < trials; i++)
+    {
+        int m_idx;
+
+        do_cmd_wiz_zap_all();
+        if ((py != start_y || px != start_x) && cave_empty_bold(start_y, start_x))
+            move_player_effect(start_y, start_x, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
+        /* Start every trial fresh: no slow, blindness, drained stats, ...
+         * and recompute speed etc. even if nothing needed curing. Kills in
+         * fight mode must not level the player up between trials. */
+        p_ptr->exp = exp0;
+        p_ptr->max_exp = max_exp0;
+        check_experience();
+        do_cmd_wiz_cure_all();
+        p_ptr->update |= PU_BONUS | PU_HP | PU_MANA;
+        handle_stuff();
+        if (i == 0) test_speed = p_ptr->pspeed;
+        m_idx = group ? _wiz_kite_place_group(r_idx, kite_tag) : _wiz_kite_place(r_idx);
+        if (!m_idx)
+        {
+            fails++;
+            continue;
+        }
+        mon_ai_stats.m_idx = m_idx;
+        mon_ai_stats.pack_idx = group ? m_list[m_idx].pack_idx : 0;
+        m_list[m_idx].nickname = kite_tag; /* detect the slot being reused after a kill */
+        if (group)
+        {
+            int alive, adj;
+            bool fl;
+            (void)_wiz_kite_focus(kite_tag, &alive, &adj, &fl);
+            group_size += alive;
+        }
+        player_energy = 0;
+
+        /* Hide test: break contact with a medium-range teleport, then wait.
+         * The monster has seen the player first, as it would in play. */
+        if (hide)
+        {
+            mon_ai_perceive(&m_list[m_idx]);
+            teleport_player(30, TELEPORT_PASSIVE);
+            handle_stuff();
+        }
+
+        for (t = 0; t < turns; t++)
+        {
+            game_turn++;
+            process_monsters();
+            p_ptr->chp = p_ptr->mhp;
+            if (group)
+            {
+                /* Follow the nearest living member; the trial ends when all are dead */
+                int alive, adj;
+                bool fl;
+                int focus = _wiz_kite_focus(kite_tag, &alive, &adj, &fl);
+                if (focus) m_idx = focus;
+                else m_list[m_idx].nickname = 0;  /* force the end-of-group check below */
+            }
+            if (!m_list[m_idx].r_idx || m_list[m_idx].nickname != kite_tag)
+            {
+                if (fight)
+                {
+                    kills++;
+                    kill_turns += t;
+                }
+                break;
+            }
+            if (p_ptr->leaving || p_ptr->is_dead) break;
+            if (hide && m_list[m_idx].cdis <= 1)
+            {
+                found++;
+                find_turns += t;
+                break;
+            }
+
+            /* The scripted player acts at its real speed */
+            player_energy -= SPEED_TO_ENERGY(p_ptr->pspeed);
+            if (player_energy <= 0)
+            {
+                player_energy += 100;
+                player_turns++;
+                if (group)
+                {
+                    int alive, adj;
+                    bool fl;
+                    (void)_wiz_kite_focus(kite_tag, &alive, &adj, &fl);
+                    adjacent_sum += adj;
+                    if (fl) flanked_turns++;
+                }
+                if (m_list[m_idx].cdis <= 1)
+                {
+                    player_adjacent++;  /* a melee chance for the player */
+                    if (fight)
+                        py_attack(m_list[m_idx].fy, m_list[m_idx].fx, 0);
+                }
+                else if (chase)
+                    _wiz_player_chase_step(m_idx);
+            }
+        }
+        mon_ai_stats.m_idx = 0;
+        mon_ai_stats.pack_idx = 0;
+        if (p_ptr->leaving || p_ptr->is_dead) break;
+    }
+
+    s = mon_ai_stats;
+    WIPE(&mon_ai_stats, mon_ai_stats_t);
+    do_cmd_wiz_zap_all();
+    if ((py != orig_y || px != orig_x) && cave_empty_bold(orig_y, orig_x))
+        move_player_effect(orig_y, orig_x, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
+    p_ptr->exp = exp0;
+    p_ptr->max_exp = max_exp0;
+    check_experience();
+    do_cmd_wiz_cure_all();
+    p_ptr->update |= PU_BONUS | PU_HP | PU_MANA;
+    handle_stuff();
+    if ((py != start_y || px != start_x) && cave_empty_bold(start_y, start_x))
+        move_player_effect(start_y, start_x, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
+    wiz_immortal = FALSE;
+    statistics_hack = FALSE;
+    game_turn = old_game_turn;
+    r_info[r_idx].max_num = old_max;
+    if (seed)
+    {
+        fingerprint = _wiz_rng_fingerprint();
+        Rand_quick = old_rand_quick;
+        Rand_value = old_rand_value;
+        Rand_place = old_rand_place;
+        C_COPY(Rand_state, old_rand_state, RAND_DEG, u32b);
+    }
+    p_ptr->chp = p_ptr->mhp;
+    p_ptr->update |= PU_MONSTERS | PU_BONUS | PU_HP;
+    p_ptr->redraw |= PR_MAP | PR_HP;
+    p_ptr->window |= PW_MONSTER_LIST;
+
+    doc = doc_alloc(80);
+    doc_printf(doc, "<color:G>AI Kite Test:</color> <color:y>%s</color> vs you (%s, speed %+d)\n\n",
+        r_name + r_info[r_idx].name, hide ? "hiding" : (fight ? "fighting" : (chase ? "chasing" : "standing still")), test_speed - 110);
+    doc_printf(doc, "%d trials x %d game turns", trials - fails, turns);
+    if (fails) doc_printf(doc, " (%d could not be set up)", fails);
+    doc_newline(doc);
+    if (group && trials - fails > 0)
+    {
+        doc_printf(doc, "Group of <color:R>%d.%d</color> on average; per your turn <color:R>%d.%02d</color> of them next to you, flanked on <color:R>%d%%</color> of your turns\n",
+            group_size / (trials - fails), (group_size * 10 / (trials - fails)) % 10,
+            player_turns ? (int)(adjacent_sum / player_turns) : 0, player_turns ? (int)(adjacent_sum * 100 / player_turns % 100) : 0,
+            player_turns ? (int)(flanked_turns * 100 / player_turns) : 0);
+    }
+    if (fight && trials - fails > 0)
+    {
+        doc_printf(doc, "You killed it in <color:R>%d%%</color> of trials", kills * 100 / (trials - fails));
+        if (kills) doc_printf(doc, ", after <color:R>%d</color> game turns on average", kill_turns / kills);
+        doc_newline(doc);
+    }
+    if (hide && trials - fails > 0)
+    {
+        doc_printf(doc, "Found you in <color:R>%d%%</color> of trials", found * 100 / (trials - fails));
+        if (found) doc_printf(doc, ", after <color:R>%d</color> game turns on average", find_turns / found);
+        doc_newline(doc);
+    }
+    if (s.turns)
+    {
+        int per = s.turns;
+        doc_printf(doc, "Monster turns: %d, <color:R>%d%%</color> of them began next to you\n", s.turns, s.adjacent * 100 / per);
+        doc_printf(doc, "Your turns: %d, <color:R>%d%%</color> of them next to the monster (melee chances)\n",
+            player_turns, player_turns ? player_adjacent * 100 / player_turns : 0);
+        doc_insert(doc, "\n<color:G>Per 100 monster turns:</color>\n");
+        doc_printf(doc, "  Spells cast at you     %3d.%d\n", s.spells * 100 / per, (s.spells * 1000 / per) % 10);
+        doc_printf(doc, "  Blinked away           %3d.%d\n", s.blinks * 100 / per, (s.blinks * 1000 / per) % 10);
+        doc_printf(doc, "  Blinked you away       %3d.%d\n", s.blink_other * 100 / per, (s.blink_other * 1000 / per) % 10);
+        doc_printf(doc, "  Teleported you away    %3d.%d\n", s.tele_other * 100 / per, (s.tele_other * 1000 / per) % 10);
+        doc_printf(doc, "  Melee attacks on you   %3d.%d\n", s.melee * 100 / per, (s.melee * 1000 / per) % 10);
+        doc_printf(doc, "  Charged big spells      %3d (released %d, interrupted %d)\n", s.charges, s.releases, s.interrupts);
+        doc_printf(doc, "  Retreat turns           %3d.%d   Shouts for help %d   Orders barked %d\n", s.retreats * 100 / per, (s.retreats * 1000 / per) % 10, s.shouts, s.barks);
+        doc_insert(doc, "\n<color:G>Perception at the start of its turns:</color>\n");
+        for (k = 1; k < MAI_S_MAX; k++)
+            doc_printf(doc, "  %-26s %3d.%d\n", mon_ai_state_name(k), s.states[k] * 100 / per, (s.states[k] * 1000 / per) % 10);
+        doc_insert(doc, "\n<color:G>Turn decisions (spellcasters):</color>\n");
+        for (k = 0; k < MAI_KIND_MAX; k++)
+            doc_printf(doc, "  %-26s %3d.%d\n", mon_ai_kind_name(k), s.kinds[k] * 100 / per, (s.kinds[k] * 1000 / per) % 10);
+    }
+    if (seed)
+        doc_printf(doc, "\nSeed %lu, RNG fingerprint <color:B>%08lX</color>\n", (unsigned long)seed, (unsigned long)fingerprint);
+    doc_display(doc, "AI Kite Test", 0);
+    doc_free(doc);
+    do_cmd_redraw();
+}
+
 extern void do_cmd_debug(void);
 void do_cmd_debug(void)
 {
@@ -2054,6 +2454,11 @@ void do_cmd_debug(void)
             doc_free(doc);
             do_cmd_redraw();
         }
+        break;
+
+    /* Measure one monster's behaviour against the player */
+    case 'K':
+        _wiz_ai_kite();
         break;
 
     /* Run many monster-vs-monster fights and report win rates */

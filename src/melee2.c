@@ -380,6 +380,8 @@ void mon_take_hit_mon(int m_idx, int dam, bool *fear, cptr note, int who)
     /* Can the player be aware of this attack? */
     bool known = (m_ptr->cdis <= MAX_SIGHT);
 
+    mon_ai_on_hurt(m_ptr, dam);
+
     /* Extract monster name */
     monster_desc(m_name, m_ptr, 0);
 
@@ -2291,6 +2293,9 @@ static void process_monster(int m_idx)
 
     int             mm[8] = {0};
 
+    mon_ai_decision_t decision;
+    int             ai_kind = MAI_PHYSICAL;
+
     cave_type       *c_ptr;
     feature_type    *f_ptr;
 
@@ -2319,6 +2324,12 @@ static void process_monster(int m_idx)
     bool            is_riding_mon = (m_idx == p_ptr->riding);
 
     bool            see_m = mon_show_msg(m_ptr);
+
+    if (mon_ai_tracked(&m_list[m_idx]))
+    {
+        mon_ai_stats.turns++;
+        if (m_ptr->cdis <= 1) mon_ai_stats.adjacent++;
+    }
 
     /* Hack: Trump monsters blink continually for free.
        Note, if you move this code below, the monster actually spawns???  Probably,
@@ -2803,12 +2814,17 @@ static void process_monster(int m_idx)
         }
     }
 
+    /* Does the monster know where the player is? (mon_ai.c) */
+    mon_ai_perceive(m_ptr);
+
+    /* Carry on with a multi-turn plan (release a charged spell, ...) */
+    if (mon_ai_intent_turn(m_ptr)) return;
+
     /* Try to cast spell occasionally */
     if (r_ptr->spells)
     {
         int freq = r_ptr->spells->freq;
         bool blocked = FALSE;
-        mon_ai_decision_t decision;
 
         /* XXX Block spells occasionally if the monster just cast (EXPERIMENTAL)
          * Here, were are attempting to prevent long runs of consecutive casts for
@@ -2852,7 +2868,9 @@ static void process_monster(int m_idx)
 
         /* Weigh this turn's options (see mon_ai.c) and pick one */
         mon_ai_decide(m_ptr, blocked, &decision);
-        if (mon_ai_choose(&decision) == MAI_CAST)
+        ai_kind = mon_ai_choose(&decision);
+        if (mon_ai_tracked(&m_list[m_idx])) mon_ai_stats.kinds[ai_kind]++;
+        if (ai_kind == MAI_CAST)
         {
             bool counterattack = FALSE;
 
@@ -2897,6 +2915,17 @@ static void process_monster(int m_idx)
             }
         }
     }
+    else
+    {
+        /* No spells: the decision is only about how to move (no cast option,
+         * so no random roll unless something like a retreat is on offer) */
+        mon_ai_decide(m_ptr, TRUE, &decision);
+        ai_kind = mon_ai_choose(&decision);
+        if (mon_ai_tracked(&m_list[m_idx])) mon_ai_stats.kinds[ai_kind]++;
+    }
+
+    /* Hit-and-run looks at last turn's melee only */
+    m_ptr->struck = 0;
 
     /* XXX Regain mana (EXPERIMENTAL) */
     if (m_ptr->mana)
@@ -2908,8 +2937,50 @@ static void process_monster(int m_idx)
     if (projectable(py, px, m_ptr->fy, m_ptr->fx))
         mon_lore_move(m_ptr);
 
+    /* Frail caster keeping its distance, or a squad member with no way
+     * through: it waits rather than closing in / jostling */
+    if (ai_kind == MAI_HOLD || ai_kind == MAI_WAIT) return;
+
+    /* Ambusher lying in wait out of sight */
+    if (ai_kind == MAI_LURK)
+    {
+        if (m_ptr->lurk < 255) m_ptr->lurk++;
+        return;
+    }
+
+    /* Guardian keeping to its post: at it, it waits */
+    if (ai_kind == MAI_GUARD && !decision.step_dir) return;
+
+    /* Shaken and hurt: break off to regroup (unless cornered) */
+    if (ai_kind == MAI_RETREAT)
+    {
+        m_ptr->intent = MAI_I_REGROUP;
+        if (!mon_ai_retreat_moves(m_ptr, mm))
+            ai_kind = MAI_PHYSICAL;  /* nowhere to go: fight on */
+    }
+
+    if (ai_kind == MAI_RETREAT)
+    {
+        /* mm[] already set by mon_ai_retreat_moves */
+    }
+
+    /* Squad flanker going round to the player's far side, or a guardian
+     * heading back to its post */
+    else if ((ai_kind == MAI_FLANK || ai_kind == MAI_GUARD) && decision.step_dir)
+    {
+        mm[0] = decision.step_dir;
+        mm[1] = 0;
+    }
+
+    /* Frail caster backing out of melee (chosen in mon_ai_decide) */
+    else if (ai_kind == MAI_STEP_AWAY && decision.step_dir)
+    {
+        mm[0] = decision.step_dir;
+        mm[1] = 0;
+    }
+
     /* Confused -- 100% random */
-    if (MON_CONFUSED(m_ptr) || !aware)
+    else if (MON_CONFUSED(m_ptr) || !aware)
     {
         /* Try four "random" directions */
         mm[0] = mm[1] = mm[2] = mm[3] = 5;
@@ -3010,6 +3081,12 @@ static void process_monster(int m_idx)
         if (!get_enemy_dir(m_idx, mm)/* && !get_moves(m_idx, mm) */)
             mm[0] = mm[1] = mm[2] = mm[3] = 5;
     }
+    /* Lost track of the player: go where it was last known, search, idle */
+    else if (!mon_ai_has_contact(m_ptr) && !MON_MONFEAR(m_ptr))
+    {
+        if (!mon_ai_track_moves(m_ptr, mm)) return;
+    }
+
     /* Normal movement */
     else
     {
@@ -3349,6 +3426,8 @@ static void process_monster(int m_idx)
                 if (!p_ptr->riding || one_in_(2))
                 {
                     /* Do the attack */
+                    if (mon_ai_tracked(&m_list[m_idx])) mon_ai_stats.melee++;
+                    m_ptr->struck = 1;
                     (void)make_attack_normal(m_idx);
                     if ((r_ptr->flags2 & RF2_INVISIBLE) && p_ptr->see_inv && !m_ptr->ml)
                         update_mon(m_idx, FALSE);
@@ -4191,6 +4270,10 @@ bool set_monster_csleep(int m_idx, int v)
     monster_type *m_ptr = &m_list[m_idx];
     bool notice = FALSE;
 
+    /* Waking up: work out where the player is on the next turn */
+    if (!v && MON_CSLEEP(m_ptr))
+        m_ptr->ai_state = MAI_S_UNSET;
+
     v = _bound(v, _range(0, 10000));
     if (v)
     {
@@ -4283,6 +4366,8 @@ bool set_monster_stunned(int m_idx, int v)
     monster_type *m_ptr = &m_list[m_idx];
     bool notice = FALSE;
 
+    if (v > 0) mon_ai_on_disabled(m_ptr);
+
     v = _bound(v, _range(0, 200));
     if (v)
     {
@@ -4307,6 +4392,8 @@ bool set_monster_confused(int m_idx, int v)
 {
     monster_type *m_ptr = &m_list[m_idx];
     bool notice = FALSE;
+
+    if (v > 0) mon_ai_on_disabled(m_ptr);
 
     v = _bound(v, _range(0, 200));
     if (v)

@@ -2857,6 +2857,11 @@ bool mon_take_hit(int m_idx, int dam, int type, bool *fear, cptr note)
 
     set_sanctuary(FALSE);
 
+    /* Hurt by the player: the monster now knows where the player is, and
+     * gets a little less keen on the fight */
+    mon_ai_alert(m_ptr);
+    mon_ai_on_hurt(m_ptr, dam);
+
     /* Hack: Player mimic has revealed itself! */
     if (p_ptr->prace == RACE_MON_RING && !p_ptr->riding)
     {

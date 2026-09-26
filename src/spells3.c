@@ -52,11 +52,31 @@ static bool cave_monster_teleportable_bold(int m_idx, int y, int x, u32b mode)
  *
  * But allow variation to prevent infinite loops.
  */
+/* How good a blink destination is for a spellcaster facing the player:
+ * keep a line of fire, land out of melee reach, avoid dead ends. */
+static int _tactical_spot_score(int m_idx, int y, int x)
+{
+    monster_race *r_ptr = &r_info[m_list[m_idx].r_idx];
+    int           d, score = 0, dist = distance(py, px, y, x);
+
+    if (projectable(y, x, py, px)) score += 100;
+    if (dist >= 3) score += 5 * MIN(dist, 8);
+    else score -= 50;
+    for (d = 0; d < 8; d++)
+    {
+        int yy = y + ddy_ddd[d], xx = x + ddx_ddd[d];
+        if (in_bounds2(yy, xx) && !player_bold(yy, xx) && monster_can_enter(yy, xx, r_ptr, 0))
+            score++;
+    }
+    return score;
+}
+
 bool teleport_away(int m_idx, int dis, u32b mode)
 {
     int oy, ox, d, i, min;
     int tries = 0;
     int ny = 0, nx = 0;
+    int found = 0, best_score = 0, best_y = 0, best_x = 0;
 
     bool look = TRUE;
 
@@ -116,11 +136,34 @@ bool teleport_away(int m_idx, int dis, u32b mode)
             if (!(quests_get_current() || p_ptr->inside_arena))
                 if (cave[ny][nx].info & CAVE_ICKY) continue;
 
+            /* Smart monsters look at a few spots and take the best */
+            if (mode & TELEPORT_TACTICAL)
+            {
+                int score = _tactical_spot_score(m_idx, ny, nx);
+                if (!found || score > best_score)
+                {
+                    best_score = score;
+                    best_y = ny;
+                    best_x = nx;
+                }
+                if (++found < 3) continue;
+                ny = best_y;
+                nx = best_x;
+            }
+
             /* This grid looks good */
             look = FALSE;
 
             /* Stop looking */
             break;
+        }
+
+        /* Tactical: settle for the best spot found so far */
+        if (look && found)
+        {
+            ny = best_y;
+            nx = best_x;
+            look = FALSE;
         }
 
         /* Increase the maximum distance */

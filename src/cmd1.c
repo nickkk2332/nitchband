@@ -3794,6 +3794,9 @@ bool py_attack(int y, int x, int mode)
     char            m_name[80];
     static s32b     last_attack_turn = 0;
 
+    /* Combat is noisy (monster perception, mon_ai.c) */
+    mon_ai_player_noise(MAI_NOISE_MELEE);
+
     /* Disturb the player */
     disturb(0, 0);
 

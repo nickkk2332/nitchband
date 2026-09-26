@@ -994,6 +994,7 @@ void do_cmd_spell(void)
     bool poli = (p_ptr->pclass == CLASS_POLITICIAN);
     bool _old_inkey_xtra = inkey_xtra;
     spell_problem = 0;
+    mon_ai_player_noise(MAI_NOISE_SPELL);
 
     inkey_xtra = TRUE;
 
