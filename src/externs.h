@@ -2342,6 +2342,8 @@ extern bool change_wild_mode(void);
 extern bool spoiler_hack;
 extern bool statistics_hack;
 extern bool wiz_immortal;
+/* ^A K test profiles: stand-in bonuses for mid-game gear (see calc_bonuses) */
+extern int  wiz_bonus_to_h, wiz_bonus_to_d, wiz_bonus_dd, wiz_bonus_blows, wiz_bonus_ac, wiz_bonus_speed;
 extern bool character_dump_hack;
 extern void strip_name(char *buf, int k_idx);
 extern void strip_name_aux(char *dest, const char *src);
