@@ -65,8 +65,17 @@ cptr mon_ai_archetype_article(int arch)
 int mon_ai_archetype(monster_race *r_ptr)
 {
     if (r_ptr->ai_arch) return r_ptr->ai_arch;
-    if (mon_race_weak_melee(r_ptr) && mon_race_has_attack_spell(r_ptr))
+    /* Frail casters. Breathers (young dragons, chimeras, hounds) are not:
+     * their melee is weak for their level, but backing off from a melee
+     * character only drags the fight out. */
+    if ( mon_race_weak_melee(r_ptr)
+      && ( mon_race_has_spell_type(r_ptr, MST_BALL)
+        || mon_race_has_spell_type(r_ptr, MST_BOLT)
+        || mon_race_has_spell_type(r_ptr, MST_BEAM)
+        || mon_race_has_spell_type(r_ptr, MST_CURSE) ) )
+    {
         return MAI_A_ARTILLERY;
+    }
     return MAI_A_BRUTE;
 }
 
@@ -392,6 +401,8 @@ static int _retreat_score(mon_ptr mon)
     if (r_ptr->flags3 & RF3_NO_FEAR) return 0;
     if (MON_MONFEAR(mon) || MON_CONFUSED(mon)) return 0;  /* the old fear code handles that */
     if (mon_ai_archetype(r_ptr) == MAI_A_BERSERKER) return 0;
+    /* No use running from someone much faster: it fights on */
+    if (mon->intent != MAI_I_REGROUP && mon_ai_speed(mon) + 10 <= p_ptr->pspeed) return 0;
     if (mon->intent == MAI_I_REGROUP)
     {
         /* Still being chased after 10 turns of running: turn and fight */

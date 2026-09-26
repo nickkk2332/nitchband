@@ -168,8 +168,8 @@ extern cptr mon_ai_plan_name(int plan);
 
 /* Archetypes and traits: how a race fights, from the race file's T: line
  * (e.g. "T:ARTILLERY | COWARDLY"). Races without one are inferred from
- * their flags: frail spellcasters are artillery, everything else a brute,
- * which is exactly the behaviour before archetypes existed. */
+ * their flags: frail spellcasters (with bolts, balls, beams or curses, not
+ * just a breath) are artillery, everything else a brute. */
 enum {
     MAI_A_NONE = 0,     /* no T: line: infer */
     MAI_A_BRUTE,        /* closes in and fights */
