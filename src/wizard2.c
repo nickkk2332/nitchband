@@ -2058,6 +2058,9 @@ static void _wiz_ai_kite(void)
         p_ptr->chp = p_ptr->mhp;
         mhp_sum += p_ptr->mhp;
         if (i == 0) test_speed = p_ptr->pspeed;
+        /* Uniques killed in an earlier trial come back for the next one
+         * (max_num is restored when the test ends) */
+        if (r_info[r_idx].flags1 & RF1_UNIQUE) r_info[r_idx].max_num = 1;
         m_idx = group ? _wiz_kite_place_group(r_idx, kite_tag) : _wiz_kite_place(r_idx);
         if (!m_idx)
         {
