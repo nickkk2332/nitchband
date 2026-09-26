@@ -22,6 +22,7 @@
    with a fresh, newly created character.*/
 bool statistics_hack = FALSE;
 bool wiz_immortal = FALSE; /* take_hit() never kills (AI harness) */
+int  wiz_bonus_to_h = 0, wiz_bonus_to_d = 0, wiz_bonus_dd = 0, wiz_bonus_blows = 0, wiz_bonus_ac = 0, wiz_bonus_speed = 0;
 static vec_ptr _rand_arts = NULL;
 static vec_ptr _egos = NULL;
 
@@ -1934,8 +1935,13 @@ static void _wiz_ai_kite(void)
     bool    group;
     s32b    find_turns = 0, kill_turns = 0;
     s32b    exp0 = p_ptr->exp, max_exp0 = p_ptr->max_exp;
-    bool    chase, hide, fight;
+    s32b    s_exp0 = p_ptr->exp, s_max_exp0 = p_ptr->max_exp;
+    bool    chase, hide, fight, attack, bolt;
     char    buf[81];
+    int     profile = 0, test_lev = 0, lev0 = p_ptr->lev, max_plv0 = p_ptr->max_plv;
+    int     shots = 0;
+    s32b    dmg_taken = 0, mhp_sum = 0;
+    cptr    profile_name = "as is";
     int     start_y = py, start_x = px;
     int     orig_y = py, orig_x = px;
     s32b    old_game_turn = game_turn;
@@ -1967,16 +1973,21 @@ static void _wiz_ai_kite(void)
     if (turns < 10) turns = 10;
     if (turns > 20000) turns = 20000;
     strcpy(buf, "c");
-    if (!msg_input("Player (c)hases, (f)ights, (s)tands still, or (t)eleports away and hides? ", buf, 2)) return;
+    if (!msg_input("Player (c)hases, (f)ights, (a)ttacks (chase + melee), (b)olts, (s)tands still, or (t)eleports away and hides? ", buf, 2)) return;
     hide = (buf[0] == 't' || buf[0] == 'T');
-    fight = (buf[0] == 'f' || buf[0] == 'F');
-    chase = !hide && (buf[0] != 's' && buf[0] != 'S');
+    attack = (buf[0] == 'a' || buf[0] == 'A');
+    bolt = (buf[0] == 'b' || buf[0] == 'B');
+    fight = (buf[0] == 'f' || buf[0] == 'F') || attack || bolt;
+    chase = !hide && (buf[0] != 's' && buf[0] != 'S') && !(buf[0] == 'f' || buf[0] == 'F');
     strcpy(buf, "n");
     if (!msg_input("Place its whole group, 5-8 squares away? (y/n) ", buf, 2)) return;
     group = (buf[0] == 'y' || buf[0] == 'Y');
     strcpy(buf, "0");
     if (!msg_input("Random seed (0 = don't fix)? ", buf, 12)) return;
     seed = strtoul(buf, NULL, 10);
+    strcpy(buf, "1");
+    if (!msg_input("Profile: (1) as is, (m)elee L25, (q)uick melee L25 +10 speed, (c)aster L25? ", buf, 2)) return;
+    profile = buf[0];
     if (!get_check("This deletes every monster on the level, and the monster's attacks affect you for real (you cannot die). Continue? ")) return;
 
     if (seed)
@@ -1987,6 +1998,32 @@ static void _wiz_ai_kite(void)
         C_COPY(old_rand_state, Rand_state, RAND_DEG, u32b);
         Rand_quick = FALSE;
         Rand_state_init(seed);
+    }
+
+    /* Test profiles: a level 25 character with stand-in bonuses for mid-game
+     * gear (applied in calc_bonuses; all undone at the end). Setting the
+     * level directly skips level-up rewards and prompts. */
+    switch (profile)
+    {
+    case 'm': case 'M':
+        test_lev = 25; profile_name = "melee L25";
+        wiz_bonus_to_h = 20; wiz_bonus_to_d = 12; wiz_bonus_dd = 2; wiz_bonus_blows = 150; wiz_bonus_ac = 60;
+        break;
+    case 'q': case 'Q':
+        test_lev = 25; profile_name = "quick melee L25";
+        wiz_bonus_to_h = 20; wiz_bonus_to_d = 12; wiz_bonus_dd = 2; wiz_bonus_blows = 150; wiz_bonus_ac = 60;
+        wiz_bonus_speed = 10;
+        break;
+    case 'c': case 'C':
+        test_lev = 25; profile_name = "caster L25";
+        wiz_bonus_ac = 30;
+        break;
+    }
+    if (test_lev)
+    {
+        p_ptr->max_plv = MAX(p_ptr->max_plv, PY_MAX_LEVEL);  /* no level-up rewards */
+        exp0 = exp_requirement(test_lev - 1);
+        max_exp0 = exp0;
     }
 
     old_max = r_info[r_idx].max_num;
@@ -2014,10 +2051,16 @@ static void _wiz_ai_kite(void)
         p_ptr->exp = exp0;
         p_ptr->max_exp = max_exp0;
         check_experience();
+        if (test_lev) p_ptr->lev = test_lev;
         do_cmd_wiz_cure_all();
         p_ptr->update |= PU_BONUS | PU_HP | PU_MANA;
         handle_stuff();
+        p_ptr->chp = p_ptr->mhp;
+        mhp_sum += p_ptr->mhp;
         if (i == 0) test_speed = p_ptr->pspeed;
+        /* Uniques killed in an earlier trial come back for the next one
+         * (max_num is restored when the test ends) */
+        if (r_info[r_idx].flags1 & RF1_UNIQUE) r_info[r_idx].max_num = 1;
         m_idx = group ? _wiz_kite_place_group(r_idx, kite_tag) : _wiz_kite_place(r_idx);
         if (!m_idx)
         {
@@ -2049,6 +2092,7 @@ static void _wiz_ai_kite(void)
         {
             game_turn++;
             process_monsters();
+            if (p_ptr->chp < p_ptr->mhp) dmg_taken += p_ptr->mhp - MAX(0, p_ptr->chp);
             p_ptr->chp = p_ptr->mhp;
             if (group)
             {
@@ -2090,7 +2134,17 @@ static void _wiz_ai_kite(void)
                     adjacent_sum += adj;
                     if (fl) flanked_turns++;
                 }
-                if (m_list[m_idx].cdis <= 1)
+                if (bolt && m_list[m_idx].ml && projectable(py, px, m_list[m_idx].fy, m_list[m_idx].fx))
+                {
+                    /* A generic attack spell: 7d8 at level 25, like a frost bolt */
+                    if (m_list[m_idx].cdis <= 1) player_adjacent++;
+                    shots++;
+                    mon_ai_player_noise(MAI_NOISE_SPELL);
+                    project(0, 0, m_list[m_idx].fy, m_list[m_idx].fx,
+                        damroll(3 + (p_ptr->lev - 1) / 5, 8), GF_MISSILE,
+                        PROJECT_STOP | PROJECT_KILL | PROJECT_REFLECTABLE | PROJECT_GRID);
+                }
+                else if (m_list[m_idx].cdis <= 1)
                 {
                     player_adjacent++;  /* a melee chance for the player */
                     if (fight)
@@ -2110,6 +2164,14 @@ static void _wiz_ai_kite(void)
     do_cmd_wiz_zap_all();
     if ((py != orig_y || px != orig_x) && cave_empty_bold(orig_y, orig_x))
         move_player_effect(orig_y, orig_x, MPE_DONT_PICKUP | MPE_HANDLE_STUFF);
+    wiz_bonus_to_h = wiz_bonus_to_d = wiz_bonus_dd = wiz_bonus_blows = wiz_bonus_ac = wiz_bonus_speed = 0;
+    if (test_lev)
+    {
+        exp0 = s_exp0;
+        max_exp0 = s_max_exp0;
+        p_ptr->lev = lev0;
+        p_ptr->max_plv = max_plv0;
+    }
     p_ptr->exp = exp0;
     p_ptr->max_exp = max_exp0;
     check_experience();
@@ -2136,8 +2198,17 @@ static void _wiz_ai_kite(void)
     p_ptr->window |= PW_MONSTER_LIST;
 
     doc = doc_alloc(80);
-    doc_printf(doc, "<color:G>AI Kite Test:</color> <color:y>%s</color> vs you (%s, speed %+d)\n\n",
-        r_name + r_info[r_idx].name, hide ? "hiding" : (fight ? "fighting" : (chase ? "chasing" : "standing still")), test_speed - 110);
+    doc_printf(doc, "<color:G>AI Kite Test:</color> <color:y>%s</color> vs you (%s, speed %+d, %s)\n\n",
+        r_name + r_info[r_idx].name,
+        hide ? "hiding" : (bolt ? "bolting" : (attack ? "attacking" : (fight ? "fighting" : (chase ? "chasing" : "standing still")))),
+        test_speed - 110, profile_name);
+    if (bolt) doc_printf(doc, "You fired %d bolts\n", shots);
+    if (player_turns && trials - fails > 0)
+    {
+        int avg_mhp = mhp_sum / (trials - fails);
+        doc_printf(doc, "Damage taken: %d per 100 of your turns (%d%% of your %d max HP)\n",
+            (int)(dmg_taken * 100 / player_turns), avg_mhp ? (int)(dmg_taken * 100 / player_turns * 100 / avg_mhp) : 0, avg_mhp);
+    }
     doc_printf(doc, "%d trials x %d game turns", trials - fails, turns);
     if (fails) doc_printf(doc, " (%d could not be set up)", fails);
     doc_newline(doc);

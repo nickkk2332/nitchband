@@ -5212,6 +5212,24 @@ void calc_bonuses(void)
         }
     }
 
+    /* Debug AI harness (^A K): a test profile standing in for mid-game gear */
+    if (wiz_bonus_to_h || wiz_bonus_to_d || wiz_bonus_dd || wiz_bonus_blows || wiz_bonus_ac || wiz_bonus_speed)
+    {
+        for (i = 0; i < MAX_HANDS; i++)
+        {
+            if (p_ptr->weapon_info[i].wield_how == WIELD_NONE) continue;
+            p_ptr->weapon_info[i].to_h += wiz_bonus_to_h;
+            p_ptr->weapon_info[i].dis_to_h += wiz_bonus_to_h;
+            p_ptr->weapon_info[i].to_d += wiz_bonus_to_d;
+            p_ptr->weapon_info[i].dis_to_d += wiz_bonus_to_d;
+            p_ptr->weapon_info[i].to_dd += wiz_bonus_dd;
+            p_ptr->weapon_info[i].xtra_blow += wiz_bonus_blows;
+        }
+        p_ptr->to_a += wiz_bonus_ac;
+        p_ptr->dis_to_a += wiz_bonus_ac;
+        p_ptr->pspeed += wiz_bonus_speed;
+    }
+
     /* Maximum speed is (+99). (internally it's 110 + 99) */
     /* Temporary lightspeed forces to be maximum speed */
     if ((IS_LIGHT_SPEED() && !p_ptr->riding) || (p_ptr->pspeed > 209))
