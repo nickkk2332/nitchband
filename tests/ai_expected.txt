@@ -1,0 +1,24 @@
+# Monster AI regression suite for tests/ai_regress.sh.
+# Every line is one seeded experiment and the RNG fingerprint it must end
+# with. Regenerate with: tests/ai_regress.sh --update
+#
+# R|monster A|monster B|fights|seed|||||fingerprint     (^A R monster duels)
+# K|monster|trials|turns|mode|seed|group|profile||fingerprint   (^A K kite tests)
+#   modes: c chase, f fight, a attack, b bolt, s stand, t teleport and hide
+#   profiles: 1 as is (level 1 rogue), m melee L25, q quick melee L25, c caster L25
+R|dark elven priest|dark elven mage|100|12345|||||0F6FBBBB
+R|small kobold|jackal|200|777|||||B6ACEFB5
+R|cave spider|illusionist|100|4242|||||AFF6E061
+R|baby blue dragon|dark elven priest|100|99|||||D0598AF5
+R|wormtongue, agent of saruman|hill orc|50|31337|||||36E255E4
+R|orc shaman|snaga|100|2024|||||F7EE08BD
+# kiting caster, perception + hiding, telegraphs and morale
+K|orc shaman|5|500|s|91|n|1||EE99CE49
+K|162|5|400|t|92|n|1||8D58E0F2
+K|baby blue dragon|5|800|f|93|n|1||010053B3
+# squads, skirmishers, guardians, breathers, futile retreats
+K|orc captain|3|400|s|94|y|1||971DF294
+K|196|3|500|a|95|y|m||86FCA203
+K|guardian naga|5|400|t|96|n|1||422DBB88
+K|563|4|500|a|97|n|m||473B2950
+K|240|4|400|a|98|n|q||BD294645

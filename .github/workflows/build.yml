@@ -1,0 +1,37 @@
+name: Build and AI regression
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      TERM: xterm-256color
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libncurses-dev tmux
+
+    - name: Configure
+      # configure looks for ncursesw5-config; current distributions ship ncursesw6-config
+      run: NCURSES_CONFIG="$(command -v ncursesw6-config)" sh ./configure --with-no-install --disable-x11
+
+    - name: Build
+      run: make -j"$(nproc)"
+
+    - name: Monster AI regression suite
+      # Seeded AI experiments must end with the recorded RNG fingerprints.
+      # After an intended AI change, run tests/ai_regress.sh --update and
+      # commit tests/ai_expected.txt.
+      run: tests/ai_regress.sh
